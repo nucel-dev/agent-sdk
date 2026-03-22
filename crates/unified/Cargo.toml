@@ -6,10 +6,10 @@ license.workspace = true
 description = "Unified AI coding agent SDK — provider-agnostic abstraction for Claude Code, Codex, and OpenCode"
 
 [dependencies]
-nucel-agent-core = { path = "../core" }
-nucel-agent-claude-code = { path = "../claude-code" }
-nucel-agent-codex = { path = "../codex" }
-nucel-agent-opencode = { path = "../opencode" }
+nucel-agent-core = { path = "../core", version = "0.1.0" }
+nucel-agent-claude-code = { path = "../claude-code", version = "0.1.0" }
+nucel-agent-codex = { path = "../codex", version = "0.1.0" }
+nucel-agent-opencode = { path = "../opencode", version = "0.1.0" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
