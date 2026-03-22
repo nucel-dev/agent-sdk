@@ -15,7 +15,6 @@ tracing.workspace = true
 tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
 uuid.workspace = true
-libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

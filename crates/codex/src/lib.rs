@@ -216,7 +216,7 @@ impl SessionImpl for CodexSessionImpl {
             }
         }
 
-        let (_content, turn_cost) =
+        let (content, turn_cost) =
             run_codex(&self.working_dir, prompt, &self.config, self.api_key.as_deref()).await?;
 
         {
@@ -227,7 +227,7 @@ impl SessionImpl for CodexSessionImpl {
         }
 
         Ok(AgentResponse {
-            content: _content,
+            content: content,
             cost: turn_cost,
             ..Default::default()
         })
@@ -265,7 +265,7 @@ impl AgentExecutor for CodexExecutor {
             });
         }
 
-        let (_content, turn_cost) =
+        let (_initial_content, turn_cost) =
             run_codex(working_dir, prompt, config, self.api_key.as_deref()).await?;
 
         if turn_cost.total_usd > budget {

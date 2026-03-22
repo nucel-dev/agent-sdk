@@ -53,12 +53,17 @@ impl ClaudeProcess {
 
         // Permission mode.
         match config.permission_mode {
-            Some(PermissionMode::BypassPermissions) | Some(PermissionMode::AcceptEdits) => {
+            Some(PermissionMode::BypassPermissions) => {
                 cmd.arg("--dangerously-skip-permissions");
             }
+            Some(PermissionMode::AcceptEdits) => {
+                // AcceptEdits: allow file edits but not arbitrary commands.
+                // Use allowedTools to restrict to safe file operations.
+                cmd.arg("--allowedTools")
+                    .arg("Edit,Write,Read,Glob,Grep,NotebookEdit");
+            }
             Some(PermissionMode::RejectAll) => {
-                // reject_all: just print, don't execute
-                cmd.arg("--dangerously-skip-permissions");
+                cmd.arg("--print");
             }
             _ => {}
         }
@@ -129,8 +134,12 @@ impl ClaudeProcess {
         cmd.arg("--max-turns").arg("1");
 
         match config.permission_mode {
-            Some(PermissionMode::BypassPermissions) | Some(PermissionMode::AcceptEdits) => {
+            Some(PermissionMode::BypassPermissions) => {
                 cmd.arg("--dangerously-skip-permissions");
+            }
+            Some(PermissionMode::AcceptEdits) => {
+                cmd.arg("--allowedTools")
+                    .arg("Edit,Write,Read,Glob,Grep,NotebookEdit");
             }
             _ => {}
         }
@@ -374,26 +383,27 @@ impl ClaudeProcess {
     }
 
     /// Send a follow-up query (for multi-turn sessions).
+    ///
+    /// Currently unsupported — Claude CLI runs in one-shot mode.
+    /// Returns an error to prevent silent failures.
     pub async fn send_query(&mut self, _prompt: &str) -> Result<()> {
-        tracing::debug!("send_query: one-shot mode, multi-turn not yet supported via CLI");
-        Ok(())
+        Err(AgentError::Provider {
+            provider: "claude-code".into(),
+            message: "multi-turn queries not supported in CLI subprocess mode".into(),
+        })
     }
 
     /// Gracefully shut down the subprocess.
     pub async fn shutdown(&mut self) -> Result<()> {
-        // Try SIGTERM first.
-        if let Some(pid) = self.child.id() {
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
-        }
+        // Request stop via tokio's safe, cross-platform API.
+        let _ = self.child.start_kill();
 
-        // Wait up to 5 seconds.
+        // Wait up to 5 seconds for exit.
         match tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await {
             Ok(Ok(_status)) => Ok(()),
             Ok(Err(e)) => Err(AgentError::Io(e)),
             Err(_) => {
-                // Force kill.
+                // Force kill if still alive.
                 let _ = self.child.kill().await;
                 Ok(())
             }

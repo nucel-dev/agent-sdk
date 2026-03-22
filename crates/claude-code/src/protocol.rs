@@ -169,7 +169,7 @@ pub fn parse_message(line: &str) -> Result<ClaudeMessage> {
             let duration_ms = v.get("duration_ms").and_then(|d| d.as_u64()).unwrap_or(0);
             let num_turns = v
                 .get("num_turns")
-                .and_then(|n| v.get("num_turns").and_then(|x| x.as_u64()))
+                .and_then(|n| n.as_u64())
                 .unwrap_or(1) as u32;
 
             // Extract detailed usage from usage object.
