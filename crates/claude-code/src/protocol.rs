@@ -379,4 +379,107 @@ mod tests {
         let result = parse_single_result(json);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn parse_system_non_init_returns_other() {
+        let line = r#"{"type":"system","subtype":"status","session_id":"s1"}"#;
+        let msg = parse_message(line).unwrap();
+        assert!(matches!(msg, ClaudeMessage::Other));
+    }
+
+    #[test]
+    fn parse_assistant_multiple_text_blocks() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"First"},{"type":"text","text":"Second"}]},"session_id":"s1"}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::Assistant { text, .. } => {
+                assert_eq!(text, "First\nSecond");
+            }
+            _ => panic!("expected Assistant"),
+        }
+    }
+
+    #[test]
+    fn parse_assistant_with_thinking_block() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Let me think..."},{"type":"text","text":"Answer"}]},"session_id":"s1"}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::Assistant { text, .. } => {
+                assert_eq!(text, "Answer");
+            }
+            _ => panic!("expected Assistant"),
+        }
+    }
+
+    #[test]
+    fn parse_assistant_empty_content_array() {
+        let line = r#"{"type":"assistant","message":{"content":[]},"session_id":"s1"}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::Assistant { text, .. } => {
+                assert!(text.is_empty());
+            }
+            _ => panic!("expected Assistant"),
+        }
+    }
+
+    #[test]
+    fn parse_result_zero_cost() {
+        let line = r#"{"type":"result","result":"Done","total_cost_usd":0.0,"is_error":false,"session_id":"s1","duration_ms":0,"num_turns":1}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::Result { cost, .. } => {
+                assert_eq!(cost.total_usd, 0.0);
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn parse_result_missing_optional_fields() {
+        let line = r#"{"type":"result","result":"Done","is_error":false,"session_id":"s1"}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::Result {
+                text,
+                duration_ms,
+                num_turns,
+                cost,
+                ..
+            } => {
+                assert_eq!(text, "Done");
+                assert_eq!(duration_ms, 0);
+                assert_eq!(num_turns, 1);
+                assert_eq!(cost.total_usd, 0.0);
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn parse_system_init_no_tools() {
+        let line = r#"{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-4-6"}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::SystemInit { tools, model, .. } => {
+                assert!(tools.is_empty());
+                assert_eq!(model, "claude-sonnet-4-6");
+            }
+            _ => panic!("expected SystemInit"),
+        }
+    }
+
+    #[test]
+    fn parse_message_missing_type_returns_other() {
+        let line = r#"{"data":"something"}"#;
+        let msg = parse_message(line).unwrap();
+        assert!(matches!(msg, ClaudeMessage::Other));
+    }
+
+    #[test]
+    fn parse_single_result_non_result_type_errors() {
+        let json = r#"{"type":"assistant","message":{"content":[]},"session_id":"s1"}"#;
+        let result = parse_single_result(json);
+        assert!(result.is_err());
+    }
 }
