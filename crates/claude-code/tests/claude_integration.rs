@@ -23,7 +23,7 @@ fn claude_capabilities() {
     assert!(caps.autonomous_mode);
     assert!(caps.token_usage);
     assert!(caps.mcp_support);
-    assert!(!caps.session_resume, "CLI resume not yet supported");
+    assert!(caps.session_resume, "Claude Code supports --resume flag");
     assert!(!caps.structured_output);
 }
 

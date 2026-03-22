@@ -1,6 +1,6 @@
 [package]
 name = "nucel-agent-sdk"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 description = "Unified AI coding agent SDK — provider-agnostic abstraction for Claude Code, Codex, and OpenCode"
@@ -12,10 +12,10 @@ keywords = ["agent", "coding", "claude", "ai", "sdk"]
 categories = ["development-tools", "api-bindings"]
 
 [dependencies]
-nucel-agent-core = { path = "../core", version = "0.1.1" }
-nucel-agent-claude-code = { path = "../claude-code", version = "0.1.1" }
-nucel-agent-codex = { path = "../codex", version = "0.1.1" }
-nucel-agent-opencode = { path = "../opencode", version = "0.1.1" }
+nucel-agent-core = { path = "../core", version = "0.1.2" }
+nucel-agent-claude-code = { path = "../claude-code", version = "0.1.2" }
+nucel-agent-codex = { path = "../codex", version = "0.1.2" }
+nucel-agent-opencode = { path = "../opencode", version = "0.1.2" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

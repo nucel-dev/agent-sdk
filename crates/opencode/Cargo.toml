@@ -1,6 +1,6 @@
 [package]
 name = "nucel-agent-opencode"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 description = "OpenCode provider for Nucel agent-sdk — HTTP client to OpenCode server"
@@ -12,7 +12,7 @@ keywords = ["opencode", "coding", "http", "ai", "agent"]
 categories = ["development-tools", "api-bindings"]
 
 [dependencies]
-nucel-agent-core = { path = "../core", version = "0.1.1" }
+nucel-agent-core = { path = "../core", version = "0.1.2" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -161,16 +161,52 @@ impl AgentExecutor for ClaudeCodeExecutor {
         prompt: &str,
         config: &SpawnConfig,
     ) -> Result<AgentSession> {
-        tracing::warn!(
-            session_id = %session_id,
-            "Claude Code resume: spawning new session (native resume not yet supported via CLI)"
-        );
-        self.spawn(working_dir, prompt, config).await
+        let nucel_session_id = Uuid::new_v4().to_string();
+        let cost = Arc::new(std::sync::Mutex::new(AgentCost::default()));
+        let budget = config.budget_usd.unwrap_or(f64::MAX);
+
+        if budget <= 0.0 {
+            return Err(AgentError::BudgetExceeded {
+                limit: budget,
+                spent: 0.0,
+            });
+        }
+
+        // Use official --resume <session_id> CLI flag.
+        let mut proc = ClaudeProcess::start_resume(
+            working_dir,
+            session_id,
+            prompt,
+            config,
+            self.api_key.as_deref(),
+        )
+        .await?;
+
+        let response = proc.read_response(budget).await?;
+
+        {
+            let mut c = cost.lock().unwrap();
+            *c = response.cost.clone();
+        }
+
+        let inner = Arc::new(ClaudeSessionImpl {
+            process: Arc::new(Mutex::new(proc)),
+            cost: cost.clone(),
+            budget,
+        });
+
+        Ok(AgentSession::new(
+            nucel_session_id,
+            ExecutorType::ClaudeCode,
+            working_dir.to_path_buf(),
+            config.model.clone(),
+            inner,
+        ))
     }
 
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities {
-            session_resume: false,
+            session_resume: true,
             token_usage: true,
             mcp_support: true,
             autonomous_mode: true,
@@ -213,7 +249,7 @@ mod tests {
         assert!(caps.autonomous_mode);
         assert!(caps.token_usage);
         assert!(caps.mcp_support);
-        assert!(!caps.session_resume);
+        assert!(caps.session_resume, "Claude Code supports --resume flag");
     }
 
     #[tokio::test]

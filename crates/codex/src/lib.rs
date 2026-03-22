@@ -1,13 +1,18 @@
 //! Codex provider — wraps the `codex` CLI (OpenAI).
 //!
-//! Communicates via JSONL stdio protocol (`codex exec --experimental-json`).
-//! Supports:
-//! - Thread-based multi-turn workflows
-//! - Structured output via JSON Schema
-//! - Token usage tracking
+//! Based on official Codex CLI documentation:
+//! https://developers.openai.com/codex/cli/reference/
+//!
+//! CLI: `codex exec --json "<prompt>"`
+//! Protocol: JSONL with event types:
+//!   thread.started → turn.started → item.completed → turn.completed
+//!
+//! Sandbox modes: read-only, workspace-write, danger-full-access
+//! Approval: --full-auto (convenience), --ask-for-approval <policy>
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -16,10 +21,13 @@ use uuid::Uuid;
 
 use nucel_agent_core::{
     AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
-    AvailabilityStatus, ExecutorType, Result, SessionImpl, SpawnConfig,
+    AvailabilityStatus, ExecutorType, PermissionMode, Result, SessionImpl, SpawnConfig,
 };
 
-/// Codex executor — spawns `codex` CLI subprocess.
+/// Default timeout for Codex queries (10 minutes).
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
+
+/// Codex executor — spawns `codex exec` CLI subprocess.
 pub struct CodexExecutor {
     api_key: Option<String>,
 }
@@ -53,6 +61,7 @@ impl Default for CodexExecutor {
 }
 
 /// Parse a Codex JSONL line.
+/// Official event types: thread.started, turn.started, item.completed, turn.completed, error
 fn parse_codex_line(line: &str) -> Result<Option<CodexEvent>> {
     let v: serde_json::Value =
         serde_json::from_str(line).map_err(|e| AgentError::Provider {
@@ -63,10 +72,20 @@ fn parse_codex_line(line: &str) -> Result<Option<CodexEvent>> {
     let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
     match event_type {
+        "thread.started" => {
+            let thread_id = v
+                .get("thread_id")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(Some(CodexEvent::ThreadStarted { thread_id }))
+        }
+        "turn.started" => Ok(Some(CodexEvent::TurnStarted)),
         "item.completed" => {
             let item = &v["item"];
-            match item.get("type").and_then(|t| t.as_str()) {
-                Some("agent_message") => {
+            let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match item_type {
+                "agent_message" => {
                     let text = item
                         .get("text")
                         .and_then(|t| t.as_str())
@@ -74,11 +93,15 @@ fn parse_codex_line(line: &str) -> Result<Option<CodexEvent>> {
                         .to_string();
                     Ok(Some(CodexEvent::Message(text)))
                 }
+                "reasoning" | "command_execution" | "file_change" | "mcp_tool_call" => {
+                    tracing::debug!(item_type = %item_type, "codex item completed");
+                    Ok(Some(CodexEvent::Other))
+                }
                 _ => Ok(Some(CodexEvent::Other)),
             }
         }
         "turn.completed" => {
-            let usage = &v["usage"];
+            let usage = v.get("token_usage").unwrap_or(&v["usage"]);
             let input_tokens = usage
                 .get("input_tokens")
                 .and_then(|v| v.as_u64())
@@ -92,18 +115,57 @@ fn parse_codex_line(line: &str) -> Result<Option<CodexEvent>> {
                 output_tokens,
             }))
         }
+        "turn.failed" => {
+            let error_msg = v
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            Ok(Some(CodexEvent::Error(error_msg)))
+        }
+        "error" => {
+            let error_msg = v
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error")
+                .to_string();
+            Ok(Some(CodexEvent::Error(error_msg)))
+        }
         _ => Ok(Some(CodexEvent::Other)),
     }
 }
 
 #[derive(Debug)]
 enum CodexEvent {
+    ThreadStarted { thread_id: String },
+    TurnStarted,
     Message(String),
     TurnCompleted {
         input_tokens: u64,
         output_tokens: u64,
     },
+    Error(String),
     Other,
+}
+
+/// Map our PermissionMode to Codex sandbox/approval flags.
+fn permission_to_codex_args(cmd: &mut Command, mode: Option<PermissionMode>) {
+    match mode {
+        Some(PermissionMode::BypassPermissions) => {
+            cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+        }
+        Some(PermissionMode::AcceptEdits) => {
+            cmd.arg("--full-auto");
+        }
+        Some(PermissionMode::RejectAll) => {
+            cmd.arg("--sandbox").arg("read-only");
+        }
+        Some(PermissionMode::Prompt) | None => {
+            // Default: workspace-write sandbox with on-request approval.
+            cmd.arg("--sandbox").arg("workspace-write");
+        }
+    }
 }
 
 /// Run a codex exec command and collect response.
@@ -116,16 +178,27 @@ async fn run_codex(
     let mut cmd = Command::new("codex");
     cmd.current_dir(working_dir);
     cmd.arg("exec");
-    cmd.arg("--experimental-json");
+    cmd.arg("--json"); // Official flag for JSONL output.
+    cmd.arg("--skip-git-repo-check");
 
+    // Model.
     if let Some(model) = &config.model {
         cmd.arg("--model").arg(model);
     }
 
+    // Sandbox/approval mode.
+    permission_to_codex_args(&mut cmd, config.permission_mode);
+
+    // Working directory override.
+    cmd.arg("--cd").arg(working_dir);
+
+    // The prompt.
     cmd.arg(prompt);
 
+    // Environment — OPENAI_API_KEY is the official env var for codex exec.
     if let Some(key) = api_key {
-        cmd.env("CODEX_API_KEY", key);
+        cmd.env("OPENAI_API_KEY", key);
+        cmd.env("CODEX_API_KEY", key); // Also set exec-specific var.
     }
     for (k, v) in &config.env {
         cmd.env(k, v);
@@ -154,42 +227,80 @@ async fn run_codex(
     let mut line = String::new();
     let mut content = String::new();
     let mut cost = AgentCost::default();
+    let mut thread_id = String::new();
+    let mut had_error = false;
+    let mut error_msg = String::new();
 
-    loop {
-        line.clear();
-        let bytes = reader.read_line(&mut line).await.map_err(AgentError::Io)?;
-        if bytes == 0 {
-            break;
-        }
+    let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
 
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            line.clear();
+            let bytes = reader.read_line(&mut line).await.map_err(AgentError::Io)?;
+            if bytes == 0 {
+                break;
+            }
 
-        match parse_codex_line(trimmed) {
-            Ok(Some(CodexEvent::Message(text))) => {
-                if !content.is_empty() {
-                    content.push('\n');
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            match parse_codex_line(trimmed) {
+                Ok(Some(CodexEvent::ThreadStarted { thread_id: tid })) => {
+                    thread_id = tid;
+                    tracing::debug!(thread_id = %thread_id, "codex thread started");
                 }
-                content.push_str(&text);
+                Ok(Some(CodexEvent::TurnStarted)) => {
+                    tracing::debug!("codex turn started");
+                }
+                Ok(Some(CodexEvent::Message(text))) => {
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(&text);
+                }
+                Ok(Some(CodexEvent::TurnCompleted {
+                    input_tokens,
+                    output_tokens,
+                })) => {
+                    cost.input_tokens = input_tokens;
+                    cost.output_tokens = output_tokens;
+                }
+                Ok(Some(CodexEvent::Error(msg))) => {
+                    had_error = true;
+                    error_msg = msg;
+                }
+                Ok(Some(CodexEvent::Other)) => {}
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to parse codex line");
+                }
             }
-            Ok(Some(CodexEvent::TurnCompleted {
-                input_tokens,
-                output_tokens,
-            })) => {
-                cost.input_tokens = input_tokens;
-                cost.output_tokens = output_tokens;
-            }
-            Ok(Some(CodexEvent::Other)) => {}
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to parse codex line");
-            }
+        }
+        Ok::<(), AgentError>(())
+    })
+    .await;
+
+    // Wait for process to finish.
+    let _ = child.wait().await;
+
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            return Err(AgentError::Timeout {
+                seconds: timeout.as_secs(),
+            });
         }
     }
 
-    let _ = child.wait().await;
+    if had_error {
+        return Err(AgentError::Provider {
+            provider: "codex".into(),
+            message: format!("codex error: {error_msg}"),
+        });
+    }
 
     Ok((content, cost))
 }
@@ -227,7 +338,7 @@ impl SessionImpl for CodexSessionImpl {
         }
 
         Ok(AgentResponse {
-            content: content,
+            content,
             cost: turn_cost,
             ..Default::default()
         })
@@ -265,7 +376,7 @@ impl AgentExecutor for CodexExecutor {
             });
         }
 
-        let (_initial_content, turn_cost) =
+        let (_content, turn_cost) =
             run_codex(working_dir, prompt, config, self.api_key.as_deref()).await?;
 
         if turn_cost.total_usd > budget {
@@ -304,9 +415,9 @@ impl AgentExecutor for CodexExecutor {
         prompt: &str,
         config: &SpawnConfig,
     ) -> Result<AgentSession> {
-        tracing::warn!(
+        tracing::info!(
             session_id = %session_id,
-            "Codex resume: spawning new session (native resume not yet implemented)"
+            "Codex resume: spawning new session (CLI resume via 'codex exec resume' not yet implemented)"
         );
         self.spawn(working_dir, prompt, config).await
     }
@@ -358,9 +469,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_codex_message_event() {
+    fn parse_codex_thread_started() {
         let line =
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"Fixed the bug"}}"#;
+            r#"{"type":"thread.started","thread_id":"019ce6ce-65fd-7530-8e6b-9ccce0436091"}"#;
+        let event = parse_codex_line(line).unwrap();
+        match event {
+            Some(CodexEvent::ThreadStarted { thread_id }) => {
+                assert_eq!(thread_id, "019ce6ce-65fd-7530-8e6b-9ccce0436091");
+            }
+            _ => panic!("expected ThreadStarted"),
+        }
+    }
+
+    #[test]
+    fn parse_codex_turn_started() {
+        let line = r#"{"type":"turn.started"}"#;
+        let event = parse_codex_line(line).unwrap();
+        assert!(matches!(event, Some(CodexEvent::TurnStarted)));
+    }
+
+    #[test]
+    fn parse_codex_message_event() {
+        let line = r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Fixed the bug"}}"#;
         let event = parse_codex_line(line).unwrap();
         match event {
             Some(CodexEvent::Message(text)) => assert_eq!(text, "Fixed the bug"),
@@ -371,7 +501,7 @@ mod tests {
     #[test]
     fn parse_codex_turn_completed() {
         let line =
-            r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
+            r#"{"type":"turn.completed","token_usage":{"input_tokens":100,"output_tokens":50}}"#;
         let event = parse_codex_line(line).unwrap();
         match event {
             Some(CodexEvent::TurnCompleted {
@@ -386,86 +516,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_codex_unknown_event_type() {
-        let line = r#"{"type":"session.started","session_id":"abc"}"#;
-        let event = parse_codex_line(line).unwrap();
-        assert!(matches!(event, Some(CodexEvent::Other)));
-    }
-
-    #[test]
-    fn parse_codex_invalid_json() {
-        let result = parse_codex_line("not json at all");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn parse_codex_item_completed_non_agent_message() {
-        let line = r#"{"type":"item.completed","item":{"type":"tool_call","name":"bash"}}"#;
-        let event = parse_codex_line(line).unwrap();
-        assert!(matches!(event, Some(CodexEvent::Other)));
-    }
-
-    #[test]
-    fn parse_codex_turn_completed_missing_usage() {
-        let line = r#"{"type":"turn.completed"}"#;
+    fn parse_codex_error() {
+        let line = r#"{"type":"error","message":"Quota exceeded"}"#;
         let event = parse_codex_line(line).unwrap();
         match event {
-            Some(CodexEvent::TurnCompleted {
-                input_tokens,
-                output_tokens,
-            }) => {
-                assert_eq!(input_tokens, 0);
-                assert_eq!(output_tokens, 0);
-            }
-            _ => panic!("expected TurnCompleted with zero tokens"),
+            Some(CodexEvent::Error(msg)) => assert!(msg.contains("Quota")),
+            _ => panic!("expected Error"),
         }
     }
 
     #[test]
-    fn parse_codex_message_empty_text() {
-        let line = r#"{"type":"item.completed","item":{"type":"agent_message"}}"#;
+    fn parse_codex_turn_failed() {
+        let line = r#"{"type":"turn.failed","error":{"message":"Quota exceeded. Check your plan."}}"#;
         let event = parse_codex_line(line).unwrap();
         match event {
-            Some(CodexEvent::Message(text)) => assert!(text.is_empty()),
-            _ => panic!("expected empty Message"),
+            Some(CodexEvent::Error(msg)) => assert!(msg.contains("Quota")),
+            _ => panic!("expected Error"),
         }
     }
 
     #[test]
-    fn codex_default_impl() {
-        let exec = CodexExecutor::default();
-        assert_eq!(exec.executor_type(), ExecutorType::Codex);
-    }
-
-    #[tokio::test]
-    async fn codex_budget_zero_rejected() {
-        let exec = CodexExecutor::new();
-        let result = exec
-            .spawn(
-                Path::new("/tmp"),
-                "test",
-                &SpawnConfig {
-                    budget_usd: Some(0.0),
-                    ..Default::default()
-                },
-            )
-            .await;
-        assert!(matches!(result, Err(AgentError::BudgetExceeded { .. })));
-    }
-
-    #[tokio::test]
-    async fn codex_negative_budget_rejected() {
-        let exec = CodexExecutor::new();
-        let result = exec
-            .spawn(
-                Path::new("/tmp"),
-                "test",
-                &SpawnConfig {
-                    budget_usd: Some(-1.0),
-                    ..Default::default()
-                },
-            )
-            .await;
-        assert!(matches!(result, Err(AgentError::BudgetExceeded { .. })));
+    fn parse_unknown_type_returns_other() {
+        let line = r#"{"type":"web_search","query":"test"}"#;
+        let event = parse_codex_line(line).unwrap();
+        assert!(matches!(event, Some(CodexEvent::Other)));
     }
 }

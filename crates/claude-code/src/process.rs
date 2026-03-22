@@ -1,8 +1,18 @@
 //! Claude Code subprocess management.
 //!
-//! Supports two modes:
-//! - `stream-json`: Streaming JSONL output (system → assistant → result)
-//! - `json`: Single JSON result at the end
+//! Based on official Claude Code CLI documentation:
+//! https://code.claude.com/docs/en/cli-reference
+//!
+//! Permission modes (official CLI values):
+//!   - `default` — standard permission behavior
+//!   - `acceptEdits` — auto-approve file edits, still prompt for bash
+//!   - `bypassPermissions` — skip all permission checks
+//!   - `plan` — analysis only, no edits/execution
+//!   - `dontAsk` — deny instead of prompting (TypeScript SDK only)
+//!
+//! Session resume: `--resume <session_id>`
+//! Budget: `--max-budget-usd <amount>` (print mode only)
+//! Multi-turn: keep subprocess alive, write prompts to stdin
 
 use std::path::Path;
 use std::process::Stdio;
@@ -17,64 +27,58 @@ use crate::protocol::{parse_message, parse_single_result, ClaudeMessage};
 /// Default timeout for Claude Code queries (10 minutes).
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
+/// Map our PermissionMode enum to official CLI flag values.
+fn permission_mode_to_cli(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::AcceptEdits => "acceptEdits",
+        PermissionMode::BypassPermissions => "bypassPermissions",
+        PermissionMode::RejectAll => "plan",
+        PermissionMode::Prompt => "default",
+    }
+}
+
 /// Manages a Claude Code CLI subprocess.
 pub struct ClaudeProcess {
     child: Child,
     stdout_reader: BufReader<tokio::process::ChildStdout>,
     stderr_reader: Option<BufReader<tokio::process::ChildStderr>>,
+    stdin_writer: Option<tokio::process::ChildStdin>,
 }
 
 impl ClaudeProcess {
-    /// Start a new Claude Code subprocess with streaming output.
-    pub async fn start(
+    /// Build the base command with common flags.
+    fn build_command(
         working_dir: &Path,
-        prompt: &str,
         config: &SpawnConfig,
         api_key: Option<&str>,
-    ) -> Result<Self> {
+    ) -> Command {
         let mut cmd = Command::new("claude");
-
         cmd.current_dir(working_dir);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-
-        // Streaming JSON output mode.
-        cmd.arg("--output-format").arg("stream-json");
-        cmd.arg("--verbose");
 
         // Model.
         if let Some(model) = &config.model {
             cmd.arg("--model").arg(model);
         }
 
-        // Max turns.
-        cmd.arg("--max-turns").arg("1");
+        // Permission mode (official CLI flag).
+        if let Some(mode) = &config.permission_mode {
+            cmd.arg("--permission-mode").arg(permission_mode_to_cli(*mode));
+        }
 
-        // Permission mode.
-        match config.permission_mode {
-            Some(PermissionMode::BypassPermissions) => {
-                cmd.arg("--dangerously-skip-permissions");
+        // Budget enforcement (official CLI flag, print mode only).
+        if let Some(budget) = config.budget_usd {
+            if budget > 0.0 && budget < f64::MAX {
+                cmd.arg("--max-budget-usd").arg(format!("{budget}"));
             }
-            Some(PermissionMode::AcceptEdits) => {
-                // AcceptEdits: allow file edits but not arbitrary commands.
-                // Use allowedTools to restrict to safe file operations.
-                cmd.arg("--allowedTools")
-                    .arg("Edit,Write,Read,Glob,Grep,NotebookEdit");
-            }
-            Some(PermissionMode::RejectAll) => {
-                cmd.arg("--print");
-            }
-            _ => {}
         }
 
         // System prompt.
         if let Some(system) = &config.system_prompt {
             cmd.arg("--system-prompt").arg(system);
         }
-
-        // The prompt itself.
-        cmd.arg("-p").arg(prompt);
 
         // Environment.
         if let Some(key) = api_key {
@@ -84,30 +88,43 @@ impl ClaudeProcess {
             cmd.env(k, v);
         }
 
-        let mut child = cmd.spawn().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                AgentError::CliNotFound {
-                    cli_name: "claude".to_string(),
-                }
-            } else {
-                AgentError::Io(e)
-            }
-        })?;
+        cmd
+    }
 
-        let stdout = child.stdout.take().ok_or_else(|| AgentError::Provider {
-            provider: "claude-code".into(),
-            message: "failed to capture stdout".into(),
-        })?;
+    /// Start a new Claude Code subprocess with streaming JSONL output.
+    /// Used for the initial spawn — sends the first prompt via -p flag.
+    pub async fn start(
+        working_dir: &Path,
+        prompt: &str,
+        config: &SpawnConfig,
+        api_key: Option<&str>,
+    ) -> Result<Self> {
+        let mut cmd = Self::build_command(working_dir, config, api_key);
 
-        let stderr = child.stderr.take();
-        let stdout_reader = BufReader::new(stdout);
-        let stderr_reader = stderr.map(BufReader::new);
+        // Print mode (non-interactive) + streaming JSON output.
+        cmd.arg("-p").arg(prompt);
+        cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--verbose"); // Required for stream-json with -p.
+        cmd.arg("--max-turns").arg("1");
 
-        Ok(Self {
-            child,
-            stdout_reader,
-            stderr_reader,
-        })
+        Self::spawn_child(cmd).await
+    }
+
+    /// Start in interactive multi-turn mode (subprocess stays alive).
+    /// Prompts are sent to stdin, responses read from stdout.
+    pub async fn start_interactive(
+        working_dir: &Path,
+        config: &SpawnConfig,
+        api_key: Option<&str>,
+    ) -> Result<Self> {
+        let mut cmd = Self::build_command(working_dir, config, api_key);
+
+        // Streaming JSON output without -p (keeps stdin open for multi-turn).
+        cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--verbose");
+        cmd.arg("--input-format").arg("stream-json");
+
+        Self::spawn_child(cmd).await
     }
 
     /// Start in non-streaming mode (single JSON result).
@@ -117,46 +134,39 @@ impl ClaudeProcess {
         config: &SpawnConfig,
         api_key: Option<&str>,
     ) -> Result<Self> {
-        let mut cmd = Command::new("claude");
+        let mut cmd = Self::build_command(working_dir, config, api_key);
 
-        cmd.current_dir(working_dir);
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        // Non-streaming JSON output mode.
+        // Print mode + non-streaming JSON output.
+        cmd.arg("-p").arg(prompt);
         cmd.arg("--output-format").arg("json");
-
-        if let Some(model) = &config.model {
-            cmd.arg("--model").arg(model);
-        }
-
         cmd.arg("--max-turns").arg("1");
 
-        match config.permission_mode {
-            Some(PermissionMode::BypassPermissions) => {
-                cmd.arg("--dangerously-skip-permissions");
-            }
-            Some(PermissionMode::AcceptEdits) => {
-                cmd.arg("--allowedTools")
-                    .arg("Edit,Write,Read,Glob,Grep,NotebookEdit");
-            }
-            _ => {}
-        }
+        Self::spawn_child(cmd).await
+    }
 
-        if let Some(system) = &config.system_prompt {
-            cmd.arg("--system-prompt").arg(system);
-        }
+    /// Spawn a new session that resumes an existing session.
+    /// Uses the official `--resume <session_id>` CLI flag.
+    pub async fn start_resume(
+        working_dir: &Path,
+        session_id: &str,
+        prompt: &str,
+        config: &SpawnConfig,
+        api_key: Option<&str>,
+    ) -> Result<Self> {
+        let mut cmd = Self::build_command(working_dir, config, api_key);
 
+        // Resume mode — official CLI flag.
+        cmd.arg("--resume").arg(session_id);
         cmd.arg("-p").arg(prompt);
+        cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--verbose");
+        cmd.arg("--max-turns").arg("1");
 
-        if let Some(key) = api_key {
-            cmd.env("ANTHROPIC_API_KEY", key);
-        }
-        for (k, v) in &config.env {
-            cmd.env(k, v);
-        }
+        Self::spawn_child(cmd).await
+    }
 
+    /// Internal: spawn the child process and extract streams.
+    async fn spawn_child(mut cmd: Command) -> Result<Self> {
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 AgentError::CliNotFound {
@@ -173,21 +183,18 @@ impl ClaudeProcess {
         })?;
 
         let stderr = child.stderr.take();
-        let stdout_reader = BufReader::new(stdout);
-        let stderr_reader = stderr.map(BufReader::new);
+        let stdin = child.stdin.take();
 
         Ok(Self {
             child,
-            stdout_reader,
-            stderr_reader,
+            stdout_reader: BufReader::new(stdout),
+            stderr_reader: stderr.map(BufReader::new),
+            stdin_writer: stdin,
         })
     }
 
-    /// Read streaming JSONL response with timeout.
-    pub async fn read_response(
-        &mut self,
-        budget: f64,
-    ) -> Result<super::AgentResponse> {
+    /// Read streaming JSONL response with default timeout.
+    pub async fn read_response(&mut self, budget: f64) -> Result<super::AgentResponse> {
         let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
         self.read_response_with_timeout(budget, timeout).await
     }
@@ -240,8 +247,7 @@ impl ClaudeProcess {
                         session_id: sid,
                     }) => {
                         if !session_id.is_empty() && sid != session_id {
-                            // Session mismatch — log but continue.
-                            tracing::warn!(expected = %session_id, got = %sid, "session_id mismatch in assistant message");
+                            tracing::warn!(expected = %session_id, got = %sid, "session_id mismatch");
                         }
                         if !text.is_empty() {
                             if !content.is_empty() {
@@ -291,11 +297,9 @@ impl ClaudeProcess {
                         }
                         break;
                     }
-                    Ok(ClaudeMessage::Other) => {
-                        // Skip unrecognized messages (tool_use, thinking, etc.)
-                    }
+                    Ok(ClaudeMessage::Other) => {}
                     Err(e) => {
-                        tracing::warn!(error = %e, line = %trimmed, "failed to parse Claude message line");
+                        tracing::warn!(error = %e, line = %trimmed, "failed to parse Claude message");
                     }
                 }
             }
@@ -307,7 +311,6 @@ impl ClaudeProcess {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(e),
             Err(_) => {
-                // Timeout — try to kill the process.
                 let _ = self.shutdown().await;
                 return Err(AgentError::Timeout {
                     seconds: timeout.as_secs(),
@@ -315,6 +318,7 @@ impl ClaudeProcess {
             }
         }
 
+        // Budget check (client-side, in addition to CLI --max-budget-usd).
         if total_cost_usd > budget {
             return Err(AgentError::BudgetExceeded {
                 limit: budget,
@@ -335,7 +339,7 @@ impl ClaudeProcess {
         })
     }
 
-    /// Read non-streaming JSON response with timeout.
+    /// Read non-streaming JSON response.
     pub async fn read_oneshot_response(
         &mut self,
         budget: f64,
@@ -348,15 +352,6 @@ impl ClaudeProcess {
                 .read_to_string(&mut buf)
                 .await
                 .map_err(AgentError::Io)?;
-
-            // Also capture stderr if available.
-            if let Some(ref mut stderr_reader) = self.stderr_reader {
-                let mut stderr_buf = String::new();
-                let _ = stderr_reader.read_to_string(&mut stderr_buf).await;
-                if !stderr_buf.is_empty() {
-                    tracing::debug!(stderr = %stderr_buf, "claude stderr output");
-                }
-            }
 
             parse_single_result(&buf)
         })
@@ -382,28 +377,45 @@ impl ClaudeProcess {
         }
     }
 
-    /// Send a follow-up query (for multi-turn sessions).
-    ///
-    /// Currently unsupported — Claude CLI runs in one-shot mode.
-    /// Returns an error to prevent silent failures.
-    pub async fn send_query(&mut self, _prompt: &str) -> Result<()> {
-        Err(AgentError::Provider {
-            provider: "claude-code".into(),
-            message: "multi-turn queries not supported in CLI subprocess mode".into(),
-        })
+    /// Send a prompt for multi-turn mode (writes to stdin).
+    /// The subprocess must be started with `start_interactive()`.
+    pub async fn send_query(&mut self, prompt: &str) -> Result<()> {
+        if let Some(ref mut stdin) = self.stdin_writer {
+            let msg = serde_json::json!({
+                "type": "human",
+                "message": prompt,
+            });
+            let line = format!("{}\n", serde_json::to_string(&msg)?);
+            use tokio::io::AsyncWriteExt;
+            stdin
+                .write_all(line.as_bytes())
+                .await
+                .map_err(AgentError::Io)?;
+            stdin.flush().await.map_err(AgentError::Io)?;
+            Ok(())
+        } else {
+            Err(AgentError::Provider {
+                provider: "claude-code".into(),
+                message: "stdin not available — use start_interactive() for multi-turn".into(),
+            })
+        }
     }
 
     /// Gracefully shut down the subprocess.
     pub async fn shutdown(&mut self) -> Result<()> {
-        // Request stop via tokio's safe, cross-platform API.
-        let _ = self.child.start_kill();
+        // Drop stdin first to signal EOF.
+        self.stdin_writer.take();
 
-        // Wait up to 5 seconds for exit.
+        if let Some(pid) = self.child.id() {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+
         match tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await {
             Ok(Ok(_status)) => Ok(()),
             Ok(Err(e)) => Err(AgentError::Io(e)),
             Err(_) => {
-                // Force kill if still alive.
                 let _ = self.child.kill().await;
                 Ok(())
             }
