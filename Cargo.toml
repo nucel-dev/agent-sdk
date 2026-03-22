@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/claude-code",
+    "crates/codex",
+    "crates/opencode",
+    "crates/unified",
+]
+resolver = "2"
+
+[workspace.package]
+license = "Apache-2.0"
+edition = "2021"
+
+[workspace.dependencies]
+# Core
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Testing
+wiremock = "0.6"
+tempfile = "3"
+tokio-test = "0.4"

@@ -1,0 +1,22 @@
+[package]
+name = "nucel-agent-opencode"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "OpenCode provider for Nucel agent-sdk — HTTP client to OpenCode server"
+
+[dependencies]
+nucel-agent-core = { path = "../core" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["full"] }
+futures.workspace = true
+reqwest.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+wiremock.workspace = true
