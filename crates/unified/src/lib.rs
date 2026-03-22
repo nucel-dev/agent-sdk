@@ -128,4 +128,53 @@ mod tests {
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"opencode"));
     }
+
+    #[test]
+    fn build_executor_empty_string_returns_none() {
+        assert!(build_executor("", None).is_none());
+    }
+
+    #[test]
+    fn build_executor_case_sensitive() {
+        assert!(build_executor("Claude-Code", None).is_none());
+        assert!(build_executor("CODEX", None).is_none());
+        assert!(build_executor("OpenCode", None).is_none());
+    }
+
+    #[test]
+    fn all_executors_have_capabilities() {
+        for provider in available_providers() {
+            let exec = build_executor(provider, None).unwrap();
+            let caps = exec.capabilities();
+            // All providers should support token usage
+            assert!(caps.token_usage, "{provider} should support token_usage");
+            // All providers should support autonomous mode
+            assert!(caps.autonomous_mode, "{provider} should support autonomous_mode");
+        }
+    }
+
+    #[test]
+    fn all_executors_report_availability() {
+        for provider in available_providers() {
+            let exec = build_executor(provider, None).unwrap();
+            let status = exec.availability();
+            // Either available or has a reason
+            if !status.available {
+                assert!(status.reason.is_some(), "{provider} unavailable but no reason");
+            }
+        }
+    }
+
+    #[test]
+    fn claude_code_api_key_ignored_by_build_executor() {
+        // build_executor for claude-code ignores the api_key_or_url param
+        let exec = build_executor("claude-code", Some("sk-test".into())).unwrap();
+        assert_eq!(exec.executor_type(), ExecutorType::ClaudeCode);
+    }
+
+    #[test]
+    fn codex_api_key_ignored_by_build_executor() {
+        let exec = build_executor("codex", Some("sk-test".into())).unwrap();
+        assert_eq!(exec.executor_type(), ExecutorType::Codex);
+    }
 }
