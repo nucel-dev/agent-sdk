@@ -1,9 +1,15 @@
 [package]
 name = "nucel-agent-core"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 description = "Core traits and types for Nucel agent-sdk — provider-agnostic AI coding agent abstraction"
+repository = "https://github.com/nucel-dev/agent-sdk"
+homepage = "https://github.com/nucel-dev/agent-sdk"
+documentation = "https://docs.rs/nucel-agent-core"
+readme = "README.md"
+keywords = ["agent", "coding", "cli", "ai", "sdk"]
+categories = ["development-tools", "api-bindings"]
 
 [dependencies]
 async-trait.workspace = true

@@ -1,12 +1,18 @@
 [package]
 name = "nucel-agent-codex"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
-description = "Codex provider for Nucel agent-sdk — subprocess wrapper for codex CLI"
+description = "Codex provider for Nucel agent-sdk — subprocess wrapper for OpenAI codex CLI"
+repository = "https://github.com/nucel-dev/agent-sdk"
+homepage = "https://github.com/nucel-dev/agent-sdk"
+documentation = "https://docs.rs/nucel-agent-codex"
+readme = "README.md"
+keywords = ["codex", "openai", "coding", "cli", "agent"]
+categories = ["development-tools", "api-bindings"]
 
 [dependencies]
-nucel-agent-core = { path = "../core", version = "0.1.0" }
+nucel-agent-core = { path = "../core", version = "0.1.1" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

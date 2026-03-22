@@ -24,3 +24,7 @@ tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+wiremock.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
