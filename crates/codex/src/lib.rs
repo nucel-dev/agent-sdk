@@ -384,4 +384,88 @@ mod tests {
             _ => panic!("expected TurnCompleted"),
         }
     }
+
+    #[test]
+    fn parse_codex_unknown_event_type() {
+        let line = r#"{"type":"session.started","session_id":"abc"}"#;
+        let event = parse_codex_line(line).unwrap();
+        assert!(matches!(event, Some(CodexEvent::Other)));
+    }
+
+    #[test]
+    fn parse_codex_invalid_json() {
+        let result = parse_codex_line("not json at all");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_codex_item_completed_non_agent_message() {
+        let line = r#"{"type":"item.completed","item":{"type":"tool_call","name":"bash"}}"#;
+        let event = parse_codex_line(line).unwrap();
+        assert!(matches!(event, Some(CodexEvent::Other)));
+    }
+
+    #[test]
+    fn parse_codex_turn_completed_missing_usage() {
+        let line = r#"{"type":"turn.completed"}"#;
+        let event = parse_codex_line(line).unwrap();
+        match event {
+            Some(CodexEvent::TurnCompleted {
+                input_tokens,
+                output_tokens,
+            }) => {
+                assert_eq!(input_tokens, 0);
+                assert_eq!(output_tokens, 0);
+            }
+            _ => panic!("expected TurnCompleted with zero tokens"),
+        }
+    }
+
+    #[test]
+    fn parse_codex_message_empty_text() {
+        let line = r#"{"type":"item.completed","item":{"type":"agent_message"}}"#;
+        let event = parse_codex_line(line).unwrap();
+        match event {
+            Some(CodexEvent::Message(text)) => assert!(text.is_empty()),
+            _ => panic!("expected empty Message"),
+        }
+    }
+
+    #[test]
+    fn codex_default_impl() {
+        let exec = CodexExecutor::default();
+        assert_eq!(exec.executor_type(), ExecutorType::Codex);
+    }
+
+    #[tokio::test]
+    async fn codex_budget_zero_rejected() {
+        let exec = CodexExecutor::new();
+        let result = exec
+            .spawn(
+                Path::new("/tmp"),
+                "test",
+                &SpawnConfig {
+                    budget_usd: Some(0.0),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(AgentError::BudgetExceeded { .. })));
+    }
+
+    #[tokio::test]
+    async fn codex_negative_budget_rejected() {
+        let exec = CodexExecutor::new();
+        let result = exec
+            .spawn(
+                Path::new("/tmp"),
+                "test",
+                &SpawnConfig {
+                    budget_usd: Some(-1.0),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(AgentError::BudgetExceeded { .. })));
+    }
 }
