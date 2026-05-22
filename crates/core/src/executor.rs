@@ -45,6 +45,8 @@ pub struct SpawnConfig {
     pub system_prompt: Option<String>,
     /// Reasoning effort level (provider-specific).
     pub reasoning: Option<String>,
+    /// Maximum autonomous turns before returning (0 or None = provider default).
+    pub max_turns: Option<u32>,
 }
 
 /// Configuration for the executor itself (not per-session).

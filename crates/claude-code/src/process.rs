@@ -105,7 +105,8 @@ impl ClaudeProcess {
         cmd.arg("-p").arg(prompt);
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose"); // Required for stream-json with -p.
-        cmd.arg("--max-turns").arg("1");
+        let turns = config.max_turns.unwrap_or(1);
+        cmd.arg("--max-turns").arg(turns.to_string());
 
         Self::spawn_child(cmd).await
     }
