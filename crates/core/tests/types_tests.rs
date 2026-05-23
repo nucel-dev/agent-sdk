@@ -121,12 +121,22 @@ fn permission_mode_serialization() {
         PermissionMode::AcceptEdits,
         PermissionMode::BypassPermissions,
         PermissionMode::RejectAll,
+        PermissionMode::DontAsk,
+        PermissionMode::Auto,
     ];
     for mode in modes {
         let json = serde_json::to_string(&mode).unwrap();
         let back: PermissionMode = serde_json::from_str(&json).unwrap();
         assert_eq!(mode, back);
     }
+}
+
+#[test]
+fn permission_mode_new_variants_serialize_snake_case() {
+    let json = serde_json::to_string(&PermissionMode::DontAsk).unwrap();
+    assert_eq!(json, "\"dont_ask\"");
+    let json = serde_json::to_string(&PermissionMode::Auto).unwrap();
+    assert_eq!(json, "\"auto\"");
 }
 
 // ── SpawnConfig ────────────────────────────────────────────────────────────
@@ -152,6 +162,7 @@ fn spawn_config_with_values() {
         env: vec![("KEY".into(), "value".into())],
         system_prompt: Some("You are a coding assistant.".into()),
         reasoning: Some("high".into()),
+        max_turns: Some(10),
     };
     assert_eq!(config.model.as_deref(), Some("claude-opus-4-6"));
     assert_eq!(config.max_tokens, Some(8192));

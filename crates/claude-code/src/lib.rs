@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 use nucel_agent_core::{
     AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
@@ -113,7 +112,6 @@ impl AgentExecutor for ClaudeCodeExecutor {
         prompt: &str,
         config: &SpawnConfig,
     ) -> Result<AgentSession> {
-        let session_id = Uuid::new_v4().to_string();
         let cost = Arc::new(std::sync::Mutex::new(AgentCost::default()));
         let budget = config.budget_usd.unwrap_or(f64::MAX);
 
@@ -131,6 +129,9 @@ impl AgentExecutor for ClaudeCodeExecutor {
             self.api_key.as_deref(),
         )
         .await?;
+
+        // Capture the pre-minted session id before the read may consume `proc`.
+        let session_id = proc.session_id().to_string();
 
         let response = proc.read_response(budget).await?;
 
@@ -161,7 +162,6 @@ impl AgentExecutor for ClaudeCodeExecutor {
         prompt: &str,
         config: &SpawnConfig,
     ) -> Result<AgentSession> {
-        let nucel_session_id = Uuid::new_v4().to_string();
         let cost = Arc::new(std::sync::Mutex::new(AgentCost::default()));
         let budget = config.budget_usd.unwrap_or(f64::MAX);
 
@@ -172,7 +172,8 @@ impl AgentExecutor for ClaudeCodeExecutor {
             });
         }
 
-        // Use official --resume <session_id> CLI flag.
+        // Use official --resume <session_id> CLI flag. The resume keeps the
+        // original session id so consumers can keep resuming.
         let mut proc = ClaudeProcess::start_resume(
             working_dir,
             session_id,
@@ -182,6 +183,7 @@ impl AgentExecutor for ClaudeCodeExecutor {
         )
         .await?;
 
+        let resumed_session_id = proc.session_id().to_string();
         let response = proc.read_response(budget).await?;
 
         {
@@ -196,7 +198,7 @@ impl AgentExecutor for ClaudeCodeExecutor {
         });
 
         Ok(AgentSession::new(
-            nucel_session_id,
+            resumed_session_id,
             ExecutorType::ClaudeCode,
             working_dir.to_path_buf(),
             config.model.clone(),

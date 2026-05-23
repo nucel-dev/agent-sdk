@@ -10,30 +10,40 @@
 //!   - `plan` — analysis only, no edits/execution
 //!   - `dontAsk` — deny instead of prompting (TypeScript SDK only)
 //!
-//! Session resume: `--resume <session_id>`
+//! Session resume: `--resume <session_id>` or `--session-id <uuid>` to pre-mint.
 //! Budget: `--max-budget-usd <amount>` (print mode only)
 //! Multi-turn: keep subprocess alive, write prompts to stdin
 
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use nucel_agent_core::{AgentCost, AgentError, PermissionMode, Result, SpawnConfig};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::protocol::{parse_message, parse_single_result, ClaudeMessage};
 
 /// Default timeout for Claude Code queries (10 minutes).
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
+/// Maximum bytes of stderr to keep in the rolling buffer for error context.
+const STDERR_BUFFER_BYTES: usize = 4096;
+
 /// Map our PermissionMode enum to official CLI flag values.
-fn permission_mode_to_cli(mode: PermissionMode) -> &'static str {
+pub(crate) fn permission_mode_to_cli(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::AcceptEdits => "acceptEdits",
         PermissionMode::BypassPermissions => "bypassPermissions",
+        // Legacy alias — `plan` mode allows reads. Use DontAsk for a true deny.
         PermissionMode::RejectAll => "plan",
-        PermissionMode::Prompt => "default",
+        PermissionMode::DontAsk => "dontAsk",
+        // `Auto` lets the provider pick its default → CLI `default`.
+        PermissionMode::Auto | PermissionMode::Prompt => "default",
+        // Forward-compat: any future variant falls back to CLI `default`.
+        _ => "default",
     }
 }
 
@@ -41,8 +51,12 @@ fn permission_mode_to_cli(mode: PermissionMode) -> &'static str {
 pub struct ClaudeProcess {
     child: Child,
     stdout_reader: BufReader<tokio::process::ChildStdout>,
-    stderr_reader: Option<BufReader<tokio::process::ChildStderr>>,
+    /// Shared rolling stderr buffer. Populated by a background drainer task.
+    stderr_buf: Arc<AsyncMutex<String>>,
     stdin_writer: Option<tokio::process::ChildStdin>,
+    /// The pre-minted session id passed via `--session-id`. Returned to caller
+    /// for round-trip resume.
+    pub(crate) session_id: String,
 }
 
 impl ClaudeProcess {
@@ -51,12 +65,16 @@ impl ClaudeProcess {
         working_dir: &Path,
         config: &SpawnConfig,
         api_key: Option<&str>,
+        session_id: &str,
     ) -> Command {
         let mut cmd = Command::new("claude");
         cmd.current_dir(working_dir);
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+
+        // Pre-minted session id so the SDK can round-trip resume.
+        cmd.arg("--session-id").arg(session_id);
 
         // Model.
         if let Some(model) = &config.model {
@@ -80,6 +98,11 @@ impl ClaudeProcess {
             cmd.arg("--system-prompt").arg(system);
         }
 
+        // Reasoning effort.
+        if let Some(effort) = &config.reasoning {
+            cmd.arg("--effort").arg(effort);
+        }
+
         // Environment.
         if let Some(key) = api_key {
             cmd.env("ANTHROPIC_API_KEY", key);
@@ -91,6 +114,14 @@ impl ClaudeProcess {
         cmd
     }
 
+    /// Append `--max-turns <n>` if configured. If `None`, omit the flag so the
+    /// CLI default (no per-call cap) applies.
+    fn apply_max_turns(cmd: &mut Command, config: &SpawnConfig) {
+        if let Some(n) = config.max_turns {
+            cmd.arg("--max-turns").arg(n.to_string());
+        }
+    }
+
     /// Start a new Claude Code subprocess with streaming JSONL output.
     /// Used for the initial spawn — sends the first prompt via -p flag.
     pub async fn start(
@@ -99,16 +130,16 @@ impl ClaudeProcess {
         config: &SpawnConfig,
         api_key: Option<&str>,
     ) -> Result<Self> {
-        let mut cmd = Self::build_command(working_dir, config, api_key);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut cmd = Self::build_command(working_dir, config, api_key, &session_id);
 
         // Print mode (non-interactive) + streaming JSON output.
         cmd.arg("-p").arg(prompt);
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose"); // Required for stream-json with -p.
-        let turns = config.max_turns.unwrap_or(1);
-        cmd.arg("--max-turns").arg(turns.to_string());
+        Self::apply_max_turns(&mut cmd, config);
 
-        Self::spawn_child(cmd).await
+        Self::spawn_child(cmd, session_id).await
     }
 
     /// Start in interactive multi-turn mode (subprocess stays alive).
@@ -118,14 +149,16 @@ impl ClaudeProcess {
         config: &SpawnConfig,
         api_key: Option<&str>,
     ) -> Result<Self> {
-        let mut cmd = Self::build_command(working_dir, config, api_key);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut cmd = Self::build_command(working_dir, config, api_key, &session_id);
 
         // Streaming JSON output without -p (keeps stdin open for multi-turn).
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose");
         cmd.arg("--input-format").arg("stream-json");
+        Self::apply_max_turns(&mut cmd, config);
 
-        Self::spawn_child(cmd).await
+        Self::spawn_child(cmd, session_id).await
     }
 
     /// Start in non-streaming mode (single JSON result).
@@ -135,14 +168,15 @@ impl ClaudeProcess {
         config: &SpawnConfig,
         api_key: Option<&str>,
     ) -> Result<Self> {
-        let mut cmd = Self::build_command(working_dir, config, api_key);
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut cmd = Self::build_command(working_dir, config, api_key, &session_id);
 
         // Print mode + non-streaming JSON output.
         cmd.arg("-p").arg(prompt);
         cmd.arg("--output-format").arg("json");
-        cmd.arg("--max-turns").arg("1");
+        Self::apply_max_turns(&mut cmd, config);
 
-        Self::spawn_child(cmd).await
+        Self::spawn_child(cmd, session_id).await
     }
 
     /// Spawn a new session that resumes an existing session.
@@ -154,20 +188,21 @@ impl ClaudeProcess {
         config: &SpawnConfig,
         api_key: Option<&str>,
     ) -> Result<Self> {
-        let mut cmd = Self::build_command(working_dir, config, api_key);
+        // For resume, reuse the existing session id (don't pre-mint a fresh one).
+        let mut cmd = Self::build_command(working_dir, config, api_key, session_id);
 
         // Resume mode — official CLI flag.
         cmd.arg("--resume").arg(session_id);
         cmd.arg("-p").arg(prompt);
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose");
-        cmd.arg("--max-turns").arg("1");
+        Self::apply_max_turns(&mut cmd, config);
 
-        Self::spawn_child(cmd).await
+        Self::spawn_child(cmd, session_id.to_string()).await
     }
 
     /// Internal: spawn the child process and extract streams.
-    async fn spawn_child(mut cmd: Command) -> Result<Self> {
+    async fn spawn_child(mut cmd: Command, session_id: String) -> Result<Self> {
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 AgentError::CliNotFound {
@@ -186,12 +221,29 @@ impl ClaudeProcess {
         let stderr = child.stderr.take();
         let stdin = child.stdin.take();
 
+        let stderr_buf = Arc::new(AsyncMutex::new(String::new()));
+        if let Some(err) = stderr {
+            let buf = stderr_buf.clone();
+            tokio::spawn(drain_stderr(err, buf));
+        }
+
         Ok(Self {
             child,
             stdout_reader: BufReader::new(stdout),
-            stderr_reader: stderr.map(BufReader::new),
+            stderr_buf,
             stdin_writer: stdin,
+            session_id,
         })
+    }
+
+    /// Returns the pre-minted session id used for `--session-id`.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    /// Best-effort snapshot of the last few KiB of stderr.
+    pub async fn stderr_snapshot(&self) -> String {
+        self.stderr_buf.lock().await.clone()
     }
 
     /// Read streaming JSONL response with default timeout.
@@ -211,7 +263,9 @@ impl ClaudeProcess {
         let mut total_cost_usd = 0.0_f64;
         let mut input_tokens = 0_u64;
         let mut output_tokens = 0_u64;
-        let mut session_id = String::new();
+        // The upstream-reported session id from system/init. Used to detect
+        // mismatches against our pre-minted id (logged at warn).
+        let mut upstream_session_id = String::new();
         let mut system_model = String::new();
 
         let result = tokio::time::timeout(timeout, async {
@@ -238,17 +292,30 @@ impl ClaudeProcess {
                         model,
                         ..
                     }) => {
-                        session_id = sid;
+                        upstream_session_id = sid;
                         system_model = model;
-                        tracing::debug!(session_id = %session_id, model = %system_model, "claude session started");
+                        if !upstream_session_id.is_empty()
+                            && upstream_session_id != self.session_id
+                        {
+                            tracing::warn!(
+                                preminted = %self.session_id,
+                                upstream = %upstream_session_id,
+                                "claude reported a different session_id than the one we requested"
+                            );
+                        }
+                        tracing::debug!(
+                            session_id = %self.session_id,
+                            model = %system_model,
+                            "claude session started"
+                        );
                     }
                     Ok(ClaudeMessage::Assistant {
                         text,
                         usage,
                         session_id: sid,
                     }) => {
-                        if !session_id.is_empty() && sid != session_id {
-                            tracing::warn!(expected = %session_id, got = %sid, "session_id mismatch");
+                        if !upstream_session_id.is_empty() && sid != upstream_session_id {
+                            tracing::warn!(expected = %upstream_session_id, got = %sid, "session_id mismatch");
                         }
                         if !text.is_empty() {
                             if !content.is_empty() {
@@ -291,9 +358,13 @@ impl ClaudeProcess {
                         );
 
                         if is_error {
+                            let stderr_tail = self.stderr_snapshot().await;
                             return Err(AgentError::Provider {
                                 provider: "claude-code".into(),
-                                message: format!("agent returned error: {text}"),
+                                message: format!(
+                                    "agent returned error: {text}{}",
+                                    fmt_stderr_tail(&stderr_tail)
+                                ),
                             });
                         }
                         break;
@@ -310,11 +381,26 @@ impl ClaudeProcess {
 
         match result {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(e),
+            Ok(Err(mut e)) => {
+                // Augment provider errors with stderr tail.
+                if let AgentError::Provider { message, .. } = &mut e {
+                    let tail = self.stderr_snapshot().await;
+                    if !tail.is_empty() && !message.contains("stderr:") {
+                        message.push_str(&fmt_stderr_tail(&tail));
+                    }
+                }
+                return Err(e);
+            }
             Err(_) => {
+                let stderr_tail = self.stderr_snapshot().await;
                 let _ = self.shutdown().await;
-                return Err(AgentError::Timeout {
-                    seconds: timeout.as_secs(),
+                return Err(AgentError::Provider {
+                    provider: "claude-code".into(),
+                    message: format!(
+                        "timed out after {}s{}",
+                        timeout.as_secs(),
+                        fmt_stderr_tail(&stderr_tail)
+                    ),
                 });
             }
         }
@@ -370,9 +456,15 @@ impl ClaudeProcess {
                 Ok(resp)
             }
             Err(_) => {
+                let stderr_tail = self.stderr_snapshot().await;
                 let _ = self.shutdown().await;
-                Err(AgentError::Timeout {
-                    seconds: timeout.as_secs(),
+                Err(AgentError::Provider {
+                    provider: "claude-code".into(),
+                    message: format!(
+                        "timed out after {}s{}",
+                        timeout.as_secs(),
+                        fmt_stderr_tail(&stderr_tail)
+                    ),
                 })
             }
         }
@@ -382,9 +474,17 @@ impl ClaudeProcess {
     /// The subprocess must be started with `start_interactive()`.
     pub async fn send_query(&mut self, prompt: &str) -> Result<()> {
         if let Some(ref mut stdin) = self.stdin_writer {
+            // Documented stream-input shape:
+            //   {"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]},"session_id":"…"}
             let msg = serde_json::json!({
-                "type": "human",
-                "message": prompt,
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt}
+                    ]
+                },
+                "session_id": self.session_id,
             });
             let line = format!("{}\n", serde_json::to_string(&msg)?);
             use tokio::io::AsyncWriteExt;
@@ -407,10 +507,21 @@ impl ClaudeProcess {
         // Drop stdin first to signal EOF.
         self.stdin_writer.take();
 
-        if let Some(pid) = self.child.id() {
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
+        // SIGTERM on unix for graceful shutdown; fall back to start_kill().
+        #[cfg(unix)]
+        {
+            if let Some(pid) = self.child.id() {
+                // SAFETY: passing a valid PID; libc::kill is safe to call.
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGTERM);
+                }
+            } else {
+                let _ = self.child.start_kill();
             }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.child.start_kill();
         }
 
         match tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await {
@@ -421,5 +532,85 @@ impl ClaudeProcess {
                 Ok(())
             }
         }
+    }
+}
+
+/// Format an optional stderr tail for inclusion in error messages.
+fn fmt_stderr_tail(tail: &str) -> String {
+    if tail.is_empty() {
+        String::new()
+    } else {
+        format!(" (stderr: {})", tail.trim())
+    }
+}
+
+/// Background task: drain the child's stderr into a rolling 4 KiB buffer.
+async fn drain_stderr(
+    stderr: tokio::process::ChildStderr,
+    buf: Arc<AsyncMutex<String>>,
+) {
+    let mut reader = BufReader::new(stderr);
+    let mut chunk = vec![0u8; 1024];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => {
+                let s = String::from_utf8_lossy(&chunk[..n]).to_string();
+                let mut guard = buf.lock().await;
+                guard.push_str(&s);
+                let len = guard.len();
+                if len > STDERR_BUFFER_BYTES {
+                    // Keep only the last STDERR_BUFFER_BYTES.
+                    let drop_to = len - STDERR_BUFFER_BYTES;
+                    // Find a UTF-8 char boundary at or after drop_to.
+                    let mut idx = drop_to;
+                    while idx < len && !guard.is_char_boundary(idx) {
+                        idx += 1;
+                    }
+                    *guard = guard[idx..].to_string();
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_mode_to_cli_mapping() {
+        // Legacy aliases preserved.
+        assert_eq!(permission_mode_to_cli(PermissionMode::AcceptEdits), "acceptEdits");
+        assert_eq!(
+            permission_mode_to_cli(PermissionMode::BypassPermissions),
+            "bypassPermissions"
+        );
+        assert_eq!(permission_mode_to_cli(PermissionMode::RejectAll), "plan");
+        assert_eq!(permission_mode_to_cli(PermissionMode::Prompt), "default");
+        // New variants.
+        assert_eq!(permission_mode_to_cli(PermissionMode::DontAsk), "dontAsk");
+        assert_eq!(permission_mode_to_cli(PermissionMode::Auto), "default");
+    }
+
+    #[test]
+    fn dont_ask_does_not_collide_with_plan() {
+        // Regression guard: DontAsk must NOT map to "plan".
+        let mapped = permission_mode_to_cli(PermissionMode::DontAsk);
+        assert_ne!(mapped, "plan");
+        assert_eq!(mapped, "dontAsk");
+    }
+
+    #[test]
+    fn fmt_stderr_tail_empty_is_empty() {
+        assert_eq!(fmt_stderr_tail(""), "");
+    }
+
+    #[test]
+    fn fmt_stderr_tail_includes_content() {
+        let out = fmt_stderr_tail("boom\n");
+        assert!(out.contains("boom"));
+        assert!(out.contains("stderr:"));
     }
 }

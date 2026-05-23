@@ -20,17 +20,30 @@ impl std::fmt::Display for ExecutorType {
 }
 
 /// Permission mode for file system and command operations.
+///
+/// This enum is `#[non_exhaustive]` — new variants may be added in minor
+/// versions. Downstream matches MUST include a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PermissionMode {
     /// Agent must prompt user for each operation.
     Prompt,
-    /// Auto-approve file edits only.
+    /// Auto-approve file edits only (still prompts for bash, etc.).
     AcceptEdits,
     /// Bypass all permission checks (sandbox mode).
     BypassPermissions,
-    /// Reject all operations (dry run).
+    /// Plan / dry-run mode — analysis only, no edits/execution.
+    /// Note: historically misnamed; Claude Code maps this to `plan` mode (still reads).
+    /// For a true deny-without-prompting mode, use [`PermissionMode::DontAsk`].
     RejectAll,
+    /// Deny instead of prompting — provider-side equivalent of "always say no".
+    /// Maps to Claude Code's `dontAsk`.
+    DontAsk,
+    /// Provider's automatic / default policy — let the provider pick a sensible
+    /// default (e.g. workspace-write sandbox for Codex, default permission mode
+    /// for Claude Code). Useful when you don't want to be opinionated.
+    Auto,
 }
 
 impl Default for PermissionMode {

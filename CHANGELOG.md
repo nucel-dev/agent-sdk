@@ -9,11 +9,89 @@ Crate versions covered in this file:
 
 | Crate | Latest |
 |---|---|
-| `nucel-agent-core` | `0.1.3` |
-| `nucel-agent-claude-code` | `0.1.3` |
-| `nucel-agent-codex` | `0.1.2` |
-| `nucel-agent-opencode` | `0.1.2` |
-| `nucel-agent-sdk` (umbrella) | `0.1.2` |
+| `nucel-agent-core` | `0.1.4` |
+| `nucel-agent-claude-code` | `0.1.4` |
+| `nucel-agent-codex` | `0.1.3` |
+| `nucel-agent-opencode` | `0.1.3` |
+| `nucel-agent-sdk` (umbrella) | `0.1.4` |
+
+---
+
+## [0.1.4 / 0.1.3] — 2026-05-24
+
+Cross-crate release driven by the SDK audit findings.
+
+### Added — `nucel-agent-core` 0.1.4
+
+- `PermissionMode::DontAsk` — maps to Claude Code's `dontAsk` mode (deny
+  without prompting). Previously `RejectAll` was misleadingly mapped to
+  `plan`, which still allows reads.
+- `PermissionMode::Auto` — let the provider pick its default policy.
+- `PermissionMode` is now `#[non_exhaustive]`; downstream matches must
+  include a wildcard arm.
+
+### Fixed — `nucel-agent-claude-code` 0.1.4
+
+- `start_resume`, `start_oneshot`, and the default `start` branch no longer
+  hard-code `--max-turns 1`; `SpawnConfig.max_turns` is honored and the
+  flag is omitted entirely when `None` (CLI default applies).
+- Stderr is now drained into a rolling 4 KiB buffer by a background task;
+  the last tail is included in `AgentError::Provider` and timeout errors.
+- A UUID is pre-minted client-side and passed to `--session-id <uuid>`;
+  `AgentSession.session_id` is the same id, so resume round-trips.
+- Stream-input shape in `send_query` now matches the documented contract:
+  `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]},"session_id":"…"}`
+- `SIGTERM` shutdown is guarded behind `#[cfg(unix)]`; non-unix targets
+  fall back to `child.start_kill()`.
+- `SpawnConfig.reasoning` is now wired to `--effort <val>` (previously
+  ignored).
+- `permission_mode_to_cli` adds `DontAsk → "dontAsk"` and `Auto → "default"`;
+  `RejectAll → "plan"` kept as a legacy alias.
+
+### Fixed — `nucel-agent-codex` 0.1.3
+
+- `permission_to_codex_args(AcceptEdits)` now uses `--sandbox workspace-write`
+  instead of the deprecated `--full-auto` (which prints a warning upstream).
+- `resume()` is implemented via `codex exec resume <thread_id> --cd <wd>
+  <prompt>` instead of silently spawning a new session.
+- `AgentSession.session_id` is now the upstream `thread_id` (captured from
+  `thread.started`), so callers can actually resume.
+- Stderr is drained by a background task to avoid pipe-buffer deadlock and
+  the tail is included in error messages.
+- Timeouts now kill the child instead of waiting forever in `child.wait()`.
+- `--color never` is passed unconditionally to keep ANSI escapes out of
+  stderr captures.
+- `turn.completed` token parsing now prefers the canonical `usage` key
+  with `token_usage` as a legacy fallback (was previously inverted).
+- Removed the misleading `CODEX_API_KEY` env injection; only
+  `OPENAI_API_KEY` is set.
+- `capabilities.session_resume = true`; `capabilities.structured_output =
+  false` (no `--output-schema` wiring yet).
+
+### Fixed — `nucel-agent-opencode` 0.1.3
+
+- The `api_key` parameter is no longer dropped — it is sent as the HTTP
+  basic-auth password (default username `opencode`, overridable via
+  `OPENCODE_SERVER_USERNAME`/`OPENCODE_SERVER_PASSWORD`).
+- `info.tokens.{input,output}` (v2) and top-level `tokens.{input,output}`
+  (legacy) are now parsed into `AgentCost.input_tokens` /
+  `output_tokens`.
+- Model body splits on `/` into `{providerID, modelID}` per the v2 SDK
+  contract; falls back to `{modelID}` when no `/` is present.
+- `directory` is now sent as `?directory=<path>` query string; the legacy
+  `x-opencode-directory` header is preserved for back-compat.
+- `reqwest::Client` is hoisted to session scope so HTTP keep-alive
+  actually works across queries.
+- `resume()` returns the OpenCode session id instead of a fresh UUID.
+- `close()` best-effort `POST /session/{id}/abort` so server-side work is
+  cancelled.
+- `AgentSession.session_id` is the actual server session id (was a fresh
+  client-side UUID).
+
+### Changed — `nucel-agent-sdk` 0.1.4
+
+- Re-pinned provider deps to the new versions (core 0.1.4, claude-code
+  0.1.4, codex 0.1.3, opencode 0.1.3).
 
 ---
 

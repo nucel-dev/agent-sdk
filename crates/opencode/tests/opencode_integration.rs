@@ -430,6 +430,289 @@ async fn opencode_spawn_fallback_to_text_field() {
 }
 
 #[tokio::test]
+async fn opencode_spawn_parses_token_usage_v2_shape() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "sess-tok"})),
+        )
+        .mount(&server)
+        .await;
+
+    // v2 shape: info.tokens.{input,output}
+    Mock::given(method("POST"))
+        .and(path("/session/sess-tok/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "Done"}],
+            "cost": 0.0042,
+            "info": {
+                "tokens": { "input": 123, "output": 45 }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let session = exec
+        .spawn(std::path::Path::new("/tmp"), "test", &SpawnConfig::default())
+        .await
+        .unwrap();
+
+    let cost = session.total_cost().await.unwrap();
+    assert_eq!(cost.input_tokens, 123);
+    assert_eq!(cost.output_tokens, 45);
+    assert!((cost.total_usd - 0.0042).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn opencode_spawn_parses_token_usage_legacy_shape() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "sess-leg"})),
+        )
+        .mount(&server)
+        .await;
+
+    // Legacy: top-level tokens.{input,output}
+    Mock::given(method("POST"))
+        .and(path("/session/sess-leg/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "Done"}],
+            "cost": 0.001,
+            "tokens": { "input": 9, "output": 11 }
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let session = exec
+        .spawn(std::path::Path::new("/tmp"), "test", &SpawnConfig::default())
+        .await
+        .unwrap();
+
+    let cost = session.total_cost().await.unwrap();
+    assert_eq!(cost.input_tokens, 9);
+    assert_eq!(cost.output_tokens, 11);
+}
+
+#[tokio::test]
+async fn opencode_session_id_round_trips_from_server() {
+    // The session.session_id should be the actual OpenCode server session id,
+    // NOT a freshly-minted client-side UUID.
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "real-server-id"})),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/session/real-server-id/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "ok"}],
+            "cost": 0.0
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let session = exec
+        .spawn(std::path::Path::new("/tmp"), "test", &SpawnConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(session.session_id, "real-server-id");
+}
+
+#[tokio::test]
+async fn opencode_resume_returns_original_server_session_id() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session/keep-this/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "resumed"}],
+            "cost": 0.0
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let session = exec
+        .resume(
+            std::path::Path::new("/tmp"),
+            "keep-this",
+            "go",
+            &SpawnConfig::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(session.session_id, "keep-this");
+}
+
+#[tokio::test]
+async fn opencode_close_calls_abort_endpoint() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let abort_hit = std::sync::Arc::new(AtomicBool::new(false));
+
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "sess-abort"})),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/session/sess-abort/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "go"}],
+            "cost": 0.0
+        })))
+        .mount(&server)
+        .await;
+
+    let abort_hit_for_mock = abort_hit.clone();
+    Mock::given(method("POST"))
+        .and(path("/session/sess-abort/abort"))
+        .respond_with(move |_req: &wiremock::Request| {
+            abort_hit_for_mock.store(true, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({"ok": true}))
+        })
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let session = exec
+        .spawn(std::path::Path::new("/tmp"), "test", &SpawnConfig::default())
+        .await
+        .unwrap();
+
+    session.close().await.unwrap();
+    assert!(
+        abort_hit.load(Ordering::SeqCst),
+        "close() must POST to /session/<id>/abort"
+    );
+}
+
+#[tokio::test]
+async fn opencode_basic_auth_password_is_sent_when_api_key_set() {
+    use wiremock::matchers::header;
+    let server = MockServer::start().await;
+
+    // base64("opencode:my-secret") = "b3BlbmNvZGU6bXktc2VjcmV0"
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .and(header("authorization", "Basic b3BlbmNvZGU6bXktc2VjcmV0"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "auth-sess"})),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/session/auth-sess/prompt"))
+        .and(header("authorization", "Basic b3BlbmNvZGU6bXktc2VjcmV0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "ok"}],
+            "cost": 0.0
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri()).with_api_key("my-secret");
+    let session = exec
+        .spawn(std::path::Path::new("/tmp"), "go", &SpawnConfig::default())
+        .await
+        .expect("spawn with api_key should send basic auth");
+    assert_eq!(session.session_id, "auth-sess");
+}
+
+#[tokio::test]
+async fn opencode_model_body_splits_on_slash_into_provider_and_model() {
+    use wiremock::matchers::body_partial_json;
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "model-sess"})),
+        )
+        .mount(&server)
+        .await;
+
+    // Body must contain providerID + modelID for "anthropic/claude-sonnet-4".
+    Mock::given(method("POST"))
+        .and(path("/session/model-sess/prompt"))
+        .and(body_partial_json(json!({
+            "model": { "providerID": "anthropic", "modelID": "claude-sonnet-4" }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "ok"}],
+            "cost": 0.0
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let _session = exec
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "go",
+            &SpawnConfig {
+                model: Some("anthropic/claude-sonnet-4".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn with provider/model should split correctly");
+}
+
+#[tokio::test]
+async fn opencode_directory_sent_as_query_string() {
+    use wiremock::matchers::query_param;
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .and(query_param("directory", "/work/dir"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"id": "dir-sess"})),
+        )
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/session/dir-sess/prompt"))
+        .and(query_param("directory", "/work/dir"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "ok"}],
+            "cost": 0.0
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let _session = exec
+        .spawn(
+            std::path::Path::new("/work/dir"),
+            "go",
+            &SpawnConfig::default(),
+        )
+        .await
+        .expect("spawn should send directory as query string");
+}
+
+#[tokio::test]
 async fn opencode_spawn_session_missing_id_field() {
     let server = MockServer::start().await;
 

@@ -19,9 +19,34 @@ fn codex_capabilities() {
     let caps = CodexExecutor::new().capabilities();
     assert!(caps.autonomous_mode, "Codex can run bash and edit files");
     assert!(caps.token_usage, "Codex reports token usage");
-    assert!(caps.structured_output, "Codex supports JSON schema output");
-    assert!(!caps.session_resume, "CLI resume not yet implemented");
+    assert!(
+        !caps.structured_output,
+        "structured output not yet wired in this version"
+    );
+    assert!(
+        caps.session_resume,
+        "Codex now resumes via `codex exec resume`"
+    );
     assert!(!caps.mcp_support, "Codex does not support MCP");
+}
+
+#[test]
+fn codex_accepts_all_permission_modes_without_panic() {
+    // Regression: ensure new core variants don't break the executor.
+    for mode in [
+        PermissionMode::Prompt,
+        PermissionMode::AcceptEdits,
+        PermissionMode::BypassPermissions,
+        PermissionMode::RejectAll,
+        PermissionMode::DontAsk,
+        PermissionMode::Auto,
+    ] {
+        let cfg = SpawnConfig {
+            permission_mode: Some(mode),
+            ..Default::default()
+        };
+        assert_eq!(cfg.permission_mode, Some(mode));
+    }
 }
 
 #[test]

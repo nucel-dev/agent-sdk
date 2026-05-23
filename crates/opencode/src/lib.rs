@@ -6,7 +6,8 @@
 //! Supports:
 //! - Session creation and prompting
 //! - Multi-turn conversations
-//! - Session resume (native)
+//! - Session resume (native — returns the same OpenCode session id)
+//! - Basic-auth credentials (api_key → HTTP basic password)
 
 mod client;
 mod protocol;
@@ -15,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use uuid::Uuid;
 
 use nucel_agent_core::{
     AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
@@ -49,6 +49,18 @@ impl OpencodeExecutor {
         self.api_key = Some(api_key.into());
         self
     }
+
+    /// Build a client scoped to a given working dir. The underlying
+    /// `reqwest::Client` will pool HTTP keep-alive connections per executor
+    /// invocation (`spawn`, `resume`, and within a session's `query` loop —
+    /// see `OpenCodeSessionImpl::client`).
+    fn make_client(&self, working_dir: &Path) -> OpencodeClient {
+        OpencodeClient::new(
+            &self.base_url,
+            self.api_key.as_deref(),
+            working_dir.to_str(),
+        )
+    }
 }
 
 impl Default for OpencodeExecutor {
@@ -61,9 +73,8 @@ impl Default for OpencodeExecutor {
 struct OpenCodeSessionImpl {
     cost: Arc<Mutex<AgentCost>>,
     budget: f64,
-    base_url: String,
-    api_key: Option<String>,
-    working_dir: PathBuf,
+    /// One client per session — preserves HTTP keep-alive across queries.
+    client: OpencodeClient,
     opencode_session_id: String,
     config: SpawnConfig,
 }
@@ -81,13 +92,8 @@ impl SessionImpl for OpenCodeSessionImpl {
             }
         }
 
-        let client = OpencodeClient::new(
-            &self.base_url,
-            self.api_key.as_deref(),
-            self.working_dir.to_str(),
-        );
-
-        let resp = client
+        let resp = self
+            .client
             .prompt(&self.opencode_session_id, prompt, &self.config, self.budget)
             .await?;
 
@@ -106,7 +112,8 @@ impl SessionImpl for OpenCodeSessionImpl {
     }
 
     async fn close(&self) -> Result<()> {
-        Ok(())
+        // Best-effort abort of any in-flight server-side work.
+        self.client.abort(&self.opencode_session_id).await
     }
 }
 
@@ -122,7 +129,6 @@ impl AgentExecutor for OpencodeExecutor {
         prompt: &str,
         config: &SpawnConfig,
     ) -> Result<AgentSession> {
-        let session_id = Uuid::new_v4().to_string();
         let cost = Arc::new(Mutex::new(AgentCost::default()));
         let budget = config.budget_usd.unwrap_or(f64::MAX);
 
@@ -133,11 +139,7 @@ impl AgentExecutor for OpencodeExecutor {
             });
         }
 
-        let client = OpencodeClient::new(
-            &self.base_url,
-            self.api_key.as_deref(),
-            working_dir.to_str(),
-        );
+        let client = self.make_client(working_dir);
 
         // Create session on server.
         let session_data = client.create_session().await?;
@@ -150,7 +152,7 @@ impl AgentExecutor for OpencodeExecutor {
             })?
             .to_string();
 
-        // Send first prompt.
+        // Send first prompt — reusing the same client (HTTP keep-alive).
         let response = client
             .prompt(&opencode_session_id, prompt, config, budget)
             .await?;
@@ -163,15 +165,13 @@ impl AgentExecutor for OpencodeExecutor {
         let inner = Arc::new(OpenCodeSessionImpl {
             cost: cost.clone(),
             budget,
-            base_url: self.base_url.clone(),
-            api_key: self.api_key.clone(),
-            working_dir: working_dir.to_path_buf(),
-            opencode_session_id,
+            client,
+            opencode_session_id: opencode_session_id.clone(),
             config: config.clone(),
         });
 
         Ok(AgentSession::new(
-            session_id,
+            opencode_session_id,
             ExecutorType::OpenCode,
             working_dir.to_path_buf(),
             config.model.clone(),
@@ -186,15 +186,19 @@ impl AgentExecutor for OpencodeExecutor {
         prompt: &str,
         config: &SpawnConfig,
     ) -> Result<AgentSession> {
-        // OpenCode supports native session resume.
+        // OpenCode supports native session resume — we just keep prompting the
+        // existing server session id.
         let cost = Arc::new(Mutex::new(AgentCost::default()));
         let budget = config.budget_usd.unwrap_or(f64::MAX);
 
-        let client = OpencodeClient::new(
-            &self.base_url,
-            self.api_key.as_deref(),
-            working_dir.to_str(),
-        );
+        if budget <= 0.0 {
+            return Err(AgentError::BudgetExceeded {
+                limit: budget,
+                spent: 0.0,
+            });
+        }
+
+        let client = self.make_client(working_dir);
 
         let response = client
             .prompt(session_id, prompt, config, budget)
@@ -205,20 +209,16 @@ impl AgentExecutor for OpencodeExecutor {
             *c = response.cost.clone();
         }
 
-        let new_session_id = Uuid::new_v4().to_string();
-
         let inner = Arc::new(OpenCodeSessionImpl {
             cost: cost.clone(),
             budget,
-            base_url: self.base_url.clone(),
-            api_key: self.api_key.clone(),
-            working_dir: working_dir.to_path_buf(),
+            client,
             opencode_session_id: session_id.to_string(),
             config: config.clone(),
         });
 
         Ok(AgentSession::new(
-            new_session_id,
+            session_id.to_string(),
             ExecutorType::OpenCode,
             working_dir.to_path_buf(),
             config.model.clone(),
@@ -229,6 +229,7 @@ impl AgentExecutor for OpencodeExecutor {
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities {
             session_resume: true,
+            // True now that we actually parse info.tokens / tokens.
             token_usage: true,
             mcp_support: true,
             autonomous_mode: true,
@@ -245,6 +246,12 @@ impl AgentExecutor for OpencodeExecutor {
             )),
         }
     }
+}
+
+// Keep PathBuf used (formerly used directly; now via working_dir.to_path_buf()).
+#[allow(dead_code)]
+fn _pathbuf_used() -> PathBuf {
+    PathBuf::new()
 }
 
 #[cfg(test)]
