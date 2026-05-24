@@ -83,13 +83,30 @@ pub use nucel_agent_claude_code::ClaudeCodeExecutor;
 pub use nucel_agent_codex::CodexExecutor;
 pub use nucel_agent_opencode::OpencodeExecutor;
 
+#[cfg(feature = "bedrock")]
+#[cfg_attr(docsrs, doc(cfg(feature = "bedrock")))]
+pub use nucel_agent_bedrock::BedrockExecutor;
+
+#[cfg(feature = "vertex")]
+#[cfg_attr(docsrs, doc(cfg(feature = "vertex")))]
+pub use nucel_agent_vertex::VertexExecutor;
+
 /// Build an executor from a config string (like `providers.agent = "claude-code"`).
 ///
 /// - `"claude-code"` → `ClaudeCodeExecutor`
 /// - `"codex"` → `CodexExecutor`
 /// - `"opencode"` → `OpencodeExecutor` (second arg is base URL)
+/// - `"bedrock"` → `BedrockExecutor` (feature `bedrock`; uses AWS default chain)
+/// - `"vertex"` → `VertexExecutor` (feature `vertex`; second arg is
+///   `"<project>:<region>"`)
 ///
-/// Returns `None` for unknown providers.
+/// For `"bedrock"` and `"vertex"` this function spins a tiny `tokio`
+/// runtime to satisfy the async credential lookups — fine for one-shot
+/// startup. Async callers should construct the executor directly via the
+/// provider crate to avoid the nested runtime.
+///
+/// Returns `None` for unknown providers, or for `"bedrock"`/`"vertex"`
+/// when the feature is disabled or required config is missing.
 pub fn build_executor(
     provider: &str,
     api_key_or_url: Option<String>,
@@ -104,13 +121,101 @@ pub fn build_executor(
             }
             Some(Box::new(exec))
         }
+        #[cfg(feature = "bedrock")]
+        "bedrock" => {
+            // Async credential lookup — done on a dedicated short-lived
+            // runtime so this stays sync at the API boundary.
+            let exec = build_bedrock_blocking()?;
+            Some(Box::new(exec))
+        }
+        #[cfg(feature = "vertex")]
+        "vertex" => {
+            // Expect `api_key_or_url == "project:region"` (e.g.
+            // `"my-proj:us-east5"`). Without this we can't form an endpoint.
+            let spec = api_key_or_url?;
+            let (project, region) = spec.split_once(':')?;
+            if project.is_empty() || region.is_empty() {
+                return None;
+            }
+            let exec = build_vertex_blocking(project, region)?;
+            Some(Box::new(exec))
+        }
         _ => None,
     }
 }
 
-/// List all available provider names.
+#[cfg(feature = "bedrock")]
+fn build_bedrock_blocking() -> Option<BedrockExecutor> {
+    // If we're already inside a tokio runtime, `block_on` would deadlock;
+    // spawn_blocking + Handle::block_on is the safe pattern.
+    let exec = if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                Some(rt.block_on(BedrockExecutor::new()))
+            })
+            .join()
+            .ok()
+            .flatten()
+        })
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        Some(rt.block_on(BedrockExecutor::new()))
+    };
+    exec
+}
+
+#[cfg(feature = "vertex")]
+fn build_vertex_blocking(project: &str, region: &str) -> Option<VertexExecutor> {
+    let project = project.to_string();
+    let region = region.to_string();
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?;
+                rt.block_on(VertexExecutor::with_adc(project, region)).ok()
+            })
+            .join()
+            .ok()
+            .flatten()
+        })
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        rt.block_on(VertexExecutor::with_adc(project, region)).ok()
+    }
+}
+
+/// List all available provider names — feature-gated providers only show
+/// up when their crate feature is enabled.
 pub fn available_providers() -> &'static [&'static str] {
-    &["claude-code", "codex", "opencode"]
+    #[cfg(all(feature = "bedrock", feature = "vertex"))]
+    {
+        return &["claude-code", "codex", "opencode", "bedrock", "vertex"];
+    }
+    #[cfg(all(feature = "bedrock", not(feature = "vertex")))]
+    {
+        return &["claude-code", "codex", "opencode", "bedrock"];
+    }
+    #[cfg(all(not(feature = "bedrock"), feature = "vertex"))]
+    {
+        return &["claude-code", "codex", "opencode", "vertex"];
+    }
+    #[cfg(not(any(feature = "bedrock", feature = "vertex")))]
+    {
+        &["claude-code", "codex", "opencode"]
+    }
 }
 
 #[cfg(test)]
@@ -155,7 +260,9 @@ mod tests {
     #[test]
     fn available_providers_list() {
         let providers = available_providers();
-        assert_eq!(providers.len(), 3);
+        // Three base providers are always present; bedrock/vertex appear
+        // when their features are enabled.
+        assert!(providers.len() >= 3);
         assert!(providers.contains(&"claude-code"));
         assert!(providers.contains(&"codex"));
         assert!(providers.contains(&"opencode"));
@@ -173,21 +280,31 @@ mod tests {
         assert!(build_executor("OpenCode", None).is_none());
     }
 
+    /// Providers that are constructed sync with no config — the three
+    /// process/HTTP-based ones. Bedrock/Vertex need cloud credentials and
+    /// async setup so we cover them separately.
+    fn locally_constructible_providers() -> &'static [&'static str] {
+        &["claude-code", "codex", "opencode"]
+    }
+
     #[test]
     fn all_executors_have_capabilities() {
-        for provider in available_providers() {
+        for provider in locally_constructible_providers() {
             let exec = build_executor(provider, None).unwrap();
             let caps = exec.capabilities();
-            // All providers should support token usage
+            // All process-based providers should support token usage
             assert!(caps.token_usage, "{provider} should support token_usage");
-            // All providers should support autonomous mode
-            assert!(caps.autonomous_mode, "{provider} should support autonomous_mode");
+            // All process-based providers should support autonomous mode
+            assert!(
+                caps.autonomous_mode,
+                "{provider} should support autonomous_mode"
+            );
         }
     }
 
     #[test]
     fn all_executors_report_availability() {
-        for provider in available_providers() {
+        for provider in locally_constructible_providers() {
             let exec = build_executor(provider, None).unwrap();
             let status = exec.availability();
             // Either available or has a reason
@@ -208,5 +325,42 @@ mod tests {
     fn codex_api_key_ignored_by_build_executor() {
         let exec = build_executor("codex", Some("sk-test".into())).unwrap();
         assert_eq!(exec.executor_type(), ExecutorType::Codex);
+    }
+
+    #[cfg(feature = "vertex")]
+    #[test]
+    fn vertex_requires_project_and_region_spec() {
+        // Missing spec → None
+        assert!(build_executor("vertex", None).is_none());
+        // Malformed spec → None
+        assert!(build_executor("vertex", Some("only-project".into())).is_none());
+        // Empty project → None
+        assert!(build_executor("vertex", Some(":us-east5".into())).is_none());
+        // Empty region → None
+        assert!(build_executor("vertex", Some("p:".into())).is_none());
+    }
+
+    #[cfg(feature = "vertex")]
+    #[test]
+    fn vertex_string_appears_in_available_providers() {
+        assert!(available_providers().contains(&"vertex"));
+    }
+
+    #[cfg(feature = "bedrock")]
+    #[test]
+    fn bedrock_string_appears_in_available_providers() {
+        assert!(available_providers().contains(&"bedrock"));
+    }
+
+    #[cfg(not(feature = "bedrock"))]
+    #[test]
+    fn bedrock_unavailable_without_feature() {
+        assert!(build_executor("bedrock", None).is_none());
+    }
+
+    #[cfg(not(feature = "vertex"))]
+    #[test]
+    fn vertex_unavailable_without_feature() {
+        assert!(build_executor("vertex", None).is_none());
     }
 }
