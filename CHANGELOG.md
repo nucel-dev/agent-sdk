@@ -13,7 +13,92 @@ Crate versions covered in this file:
 | `nucel-agent-claude-code` | `0.2.0` |
 | `nucel-agent-codex` | `0.2.0` |
 | `nucel-agent-opencode` | `0.2.0` |
+| `nucel-agent-bedrock` | `0.1.0` |
+| `nucel-agent-vertex` | `0.1.0` |
 | `nucel-agent-sdk` (umbrella) | `0.2.0` |
+
+---
+
+## [Unreleased]
+
+Closes audit gap **G47** — first-party providers for Claude on AWS Bedrock
+and GCP Vertex AI. Both ship as separate crates so consumers that don't
+need cloud bindings pay zero dependency cost. Wired into the umbrella
+crate behind optional features (`bedrock`, `vertex`, or `all-providers`).
+Core / claude-code / codex / opencode are untouched — no version bumps.
+
+### Added — `nucel-agent-bedrock` 0.1.0 (new crate)
+
+- `BedrockExecutor` implements `AgentExecutor` against
+  `aws-sdk-bedrockruntime::Client::converse`.
+- Credentials via the default AWS provider chain
+  (`aws_config::defaults(BehaviorVersion::latest())`) — env vars,
+  `~/.aws/credentials`, IMDS, ECS task role, SSO.
+- `BedrockExecutor::from_client(...)` for callers that want full SDK
+  config control (retries, region, identity_cache, etc.) — also the
+  hook used in tests.
+- Token usage parsed from Bedrock invocation metadata
+  (`output.usage().input_tokens` / `output_tokens`).
+- Best-effort USD cost via an internal `pricing::lookup` table; covers
+  Claude Opus 4.7 / 4 / Sonnet 4 / 3.5 / Haiku 4 / 3.5 / 3 and the
+  cross-region inference profile prefixes. Unknown models fall back to
+  `$0.00`.
+- Multi-turn transcript kept client-side in `Arc<Mutex<Vec<Message>>>`.
+- Budget enforced before every turn (pre-flight check returns
+  `AgentError::BudgetExceeded` without touching the network).
+- `resume()` returns an explanatory `AgentError::Provider` — Bedrock has
+  no server-side session store.
+- Tests: 12 unit + 5 integration (via `aws-smithy-mocks`) + doc test.
+
+### Added — `nucel-agent-vertex` 0.1.0 (new crate)
+
+- `VertexExecutor` issues HTTP POSTs against the regional
+  `.../publishers/anthropic/models/<model>:rawPredict` Anthropic
+  endpoint on Vertex AI.
+- Pluggable auth via the `TokenProvider` trait:
+  - `AdcToken::discover()` — Google Application Default Credentials
+    minted into a `cloud-platform`-scoped bearer (`gcp_auth = "0.12"`).
+  - `StaticToken::new(...)` — pre-minted tokens (tests, sidecar flows).
+- `VertexExecutor::with_adc(project, region)`, `with_static_token(...)`,
+  and `with_api_root(...)` constructors.
+- Sends `anthropic_version: "vertex-2023-10-16"` and a standard
+  Anthropic messages payload.
+- Token usage + Anthropic cache token passthrough
+  (`cache_read_input_tokens`, `cache_creation_input_tokens`).
+- USD cost via per-model `pricing::lookup`.
+- Maps HTTP 429 → `AgentError::RateLimited`, other non-2xx → `Provider`
+  error, malformed JSON → `Provider` error.
+- `resume()` returns explanatory `Provider` error (no server-side
+  session store on Vertex).
+- Tests: 14 unit + 6 integration (via `wiremock`) + doc test.
+
+### Added — `nucel-agent-sdk` (umbrella)
+
+- New optional features: `bedrock`, `vertex`, `all-providers`.
+- `BedrockExecutor` and `VertexExecutor` re-exported under their
+  respective feature flags.
+- `build_executor` learns two new arms:
+  - `"bedrock"` — defers async credential lookup to a short-lived
+    nested `tokio` runtime. Async callers should construct directly.
+  - `"vertex"` — `api_key_or_url` is parsed as `"<project>:<region>"`;
+    returns `None` if malformed or if either field is empty.
+- `available_providers()` is now feature-gated; only includes
+  `bedrock` / `vertex` strings when the feature is enabled.
+
+### Tutorial
+
+- New `docs/tutorials/bedrock-vertex.md` covering provider selection,
+  credentials, multi-turn usage, cost tracking, and wire-mocked tests.
+
+### Constraints honored
+
+- No changes to `core` / `claude-code` / `codex` / `opencode` crates.
+- No bump of `nucel-agent-core` to 0.3.0. The new providers use the
+  existing 0.2.x trait surface and reuse `ExecutorType::ClaudeCode`
+  (since both Bedrock and Vertex serve Anthropic models) — adding new
+  enum variants will land in a future minor of core.
+- AWS / GCP credentials are optional at runtime; missing creds surface
+  via `availability()` and through real SDK errors at request time.
 
 ---
 
