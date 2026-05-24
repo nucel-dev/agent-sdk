@@ -5,6 +5,7 @@ members = [
     "crates/codex",
     "crates/opencode",
     "crates/bedrock",
+    "crates/vertex",
     "crates/unified",
 ]
 resolver = "2"
