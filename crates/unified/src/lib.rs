@@ -42,10 +42,20 @@
 //!
 //! # Runnable examples
 //!
+//! Basics:
+//!
 //! - [`examples/claude_basic.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/claude_basic.rs) — spawn + query + close against Claude Code.
 //! - [`examples/codex_resume.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/codex_resume.rs) — spawn, save the `session_id`, resume, query.
 //! - [`examples/opencode_http.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/opencode_http.rs) — point at a local `opencode serve` and send a prompt.
 //! - [`examples/build_executor.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/build_executor.rs) — runtime provider selection via [`build_executor`].
+//!
+//! 0.2.0 features:
+//!
+//! - [`examples/streaming_claude.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/streaming_claude.rs) — `query_stream()`: tokens, tool-use, and cost events as they arrive.
+//! - [`examples/multi_provider_handoff.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/multi_provider_handoff.rs) — run the same prompt against all 3 providers and compare cost.
+//! - [`examples/with_hooks.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/with_hooks.rs) — pre/post tool-use, `on_stop`, `user_prompt_submit` (Claude Code only).
+//! - [`examples/budget_control.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/budget_control.rs) — hit the `budget_usd` cap mid-loop and handle [`AgentError::BudgetExceeded`].
+//! - [`examples/resume_session.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/resume_session.rs) — spawn → save id → close → resume → continue.
 //!
 //! Run any of them with:
 //!
@@ -56,7 +66,7 @@
 //! # See also
 //!
 //! - [Workspace README](https://github.com/nucel-dev/agent-sdk#readme)
-//! - [`docs/tutorials/`](https://github.com/nucel-dev/agent-sdk/tree/main/docs/tutorials) — getting started, multi-turn, budget control, provider comparison.
+//! - [`docs/tutorials/`](https://github.com/nucel-dev/agent-sdk/tree/main/docs/tutorials) — getting started, multi-turn, streaming, hooks, cost & tokens, budget control, provider comparison.
 //! - [`CONTRIBUTING.md`](https://github.com/nucel-dev/agent-sdk/blob/main/CONTRIBUTING.md) — adding a new provider.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]

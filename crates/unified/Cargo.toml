@@ -49,3 +49,23 @@ path = "examples/opencode_http.rs"
 [[example]]
 name = "build_executor"
 path = "examples/build_executor.rs"
+
+[[example]]
+name = "streaming_claude"
+path = "examples/streaming_claude.rs"
+
+[[example]]
+name = "multi_provider_handoff"
+path = "examples/multi_provider_handoff.rs"
+
+[[example]]
+name = "with_hooks"
+path = "examples/with_hooks.rs"
+
+[[example]]
+name = "budget_control"
+path = "examples/budget_control.rs"
+
+[[example]]
+name = "resume_session"
+path = "examples/resume_session.rs"

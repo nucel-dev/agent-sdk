@@ -244,12 +244,20 @@ let session = executor.spawn(working_dir, prompt, &spawn_config).await?;
 Runnable examples live in the umbrella crate
 ([`crates/unified/examples/`](crates/unified/examples)):
 
-- [`spawn-claude.rs`](crates/unified/examples/spawn-claude.rs) — minimal Claude Code session
-- [`build-executor.rs`](crates/unified/examples/build-executor.rs) — pick a provider by name and inspect its capabilities
+- [`claude_basic.rs`](crates/unified/examples/claude_basic.rs) — minimal Claude Code session
+- [`codex_resume.rs`](crates/unified/examples/codex_resume.rs) — spawn, save `session_id`, resume in a new handle
+- [`opencode_http.rs`](crates/unified/examples/opencode_http.rs) — point at a local `opencode serve`
+- [`build_executor.rs`](crates/unified/examples/build_executor.rs) — pick a provider by name and inspect its capabilities
+- [`streaming_claude.rs`](crates/unified/examples/streaming_claude.rs) — 0.2.0 `query_stream()`: print tokens as they arrive
+- [`multi_provider_handoff.rs`](crates/unified/examples/multi_provider_handoff.rs) — run the same prompt across all 3 providers, compare cost
+- [`with_hooks.rs`](crates/unified/examples/with_hooks.rs) — pre/post tool-use hooks (Claude Code only)
+- [`budget_control.rs`](crates/unified/examples/budget_control.rs) — hit the `budget_usd` cap and handle `BudgetExceeded`
+- [`resume_session.rs`](crates/unified/examples/resume_session.rs) — full spawn → save id → close → resume → continue flow
 
 ```bash
-cargo run -p nucel-agent-sdk --example spawn-claude -- /path/to/repo "your prompt"
-cargo run -p nucel-agent-sdk --example build-executor -- claude-code
+cargo run -p nucel-agent-sdk --example claude_basic -- /path/to/repo
+cargo run -p nucel-agent-sdk --example streaming_claude -- /path/to/repo
+cargo run -p nucel-agent-sdk --example build_executor -- claude-code
 ```
 
 ---
@@ -258,6 +266,7 @@ cargo run -p nucel-agent-sdk --example build-executor -- claude-code
 
 - [`docs/usage.md`](docs/usage.md) — Usage patterns, error handling, budget control
 - [`docs/architecture.md`](docs/architecture.md) — Internals, transport details, adding providers
+- [`docs/tutorials/`](docs/tutorials/) — Getting started, multi-turn, streaming, hooks, cost & tokens, budget control, provider comparison
 - [`CHANGELOG.md`](CHANGELOG.md) — Release notes
 
 ## License
