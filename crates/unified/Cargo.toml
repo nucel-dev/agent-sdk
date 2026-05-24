@@ -28,3 +28,23 @@ wiremock.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "claude_basic"
+path = "examples/claude_basic.rs"
+
+[[example]]
+name = "codex_resume"
+path = "examples/codex_resume.rs"
+
+[[example]]
+name = "opencode_http"
+path = "examples/opencode_http.rs"
+
+[[example]]
+name = "build_executor"
+path = "examples/build_executor.rs"

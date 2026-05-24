@@ -1,13 +1,47 @@
-//! OpenCode provider — HTTP client to OpenCode server.
+//! OpenCode provider — HTTP client to an `opencode serve` instance.
 //!
-//! OpenCode runs as a server (`opencode serve` on `:4096`). This provider
-//! connects to it via HTTP REST API.
+//! OpenCode runs as a server (`opencode serve` on `:4096` by default). This
+//! provider talks to it via HTTP REST. The client is stateless — sessions
+//! live on the server.
 //!
 //! Supports:
 //! - Session creation and prompting
 //! - Multi-turn conversations
 //! - Session resume (native — returns the same OpenCode session id)
-//! - Basic-auth credentials (api_key → HTTP basic password)
+//! - Basic-auth credentials (`api_key` → HTTP basic password)
+//!
+//! # Minimal example
+//!
+//! Start a local server in another shell:
+//!
+//! ```bash
+//! opencode serve --port 4096
+//! ```
+//!
+//! Then:
+//!
+//! ```rust,no_run
+//! use nucel_agent_opencode::OpencodeExecutor;
+//! use nucel_agent_core::{AgentExecutor, SpawnConfig};
+//! use std::path::Path;
+//!
+//! # async fn run() -> nucel_agent_core::Result<()> {
+//! let executor = OpencodeExecutor::with_base_url("http://127.0.0.1:4096");
+//! let session = executor.spawn(
+//!     Path::new("/my/repo"),
+//!     "Read the README and summarize this project.",
+//!     &SpawnConfig::default(),
+//! ).await?;
+//!
+//! println!("{}", session.query("Any TODOs?").await?.content);
+//! session.close().await?;
+//! # Ok(()) }
+//! ```
+//!
+//! See also: [workspace README](https://github.com/nucel-dev/agent-sdk#readme)
+//! and the runnable example `crates/unified/examples/opencode_http.rs`.
+
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod client;
 mod protocol;

@@ -1,10 +1,45 @@
 //! Claude Code provider — wraps the `claude` CLI as a subprocess.
 //!
-//! Communicates via JSONL stdio protocol. Supports:
-//! - One-shot and multi-turn queries
-//! - Cost tracking per session
-//! - Permission mode configuration
-//! - Budget enforcement
+//! Spawns `claude -p ... --output-format stream-json --verbose` and speaks
+//! JSONL stdio. Supports:
+//!
+//! - One-shot and multi-turn queries (single subprocess kept alive per session)
+//! - Cost tracking per session (from `usage` events on the wire)
+//! - Permission mode configuration ([`PermissionMode`] → `--permission-mode`)
+//! - Budget enforcement (`budget_usd` → cancel on overrun)
+//!
+//! [`PermissionMode`]: nucel_agent_core::PermissionMode
+//!
+//! # Minimal example
+//!
+//! ```rust,no_run
+//! use nucel_agent_claude_code::ClaudeCodeExecutor;
+//! use nucel_agent_core::{AgentExecutor, SpawnConfig};
+//! use std::path::Path;
+//!
+//! # async fn run() -> nucel_agent_core::Result<()> {
+//! let executor = ClaudeCodeExecutor::new();
+//! let session = executor.spawn(
+//!     Path::new("/my/repo"),
+//!     "Fix the failing test in src/lib.rs",
+//!     &SpawnConfig {
+//!         model: Some("claude-opus-4-6".into()),
+//!         budget_usd: Some(5.0),
+//!         max_turns: Some(10),
+//!         ..Default::default()
+//!     },
+//! ).await?;
+//!
+//! let resp = session.query("Did CI pass?").await?;
+//! println!("{}", resp.content);
+//! session.close().await?;
+//! # Ok(()) }
+//! ```
+//!
+//! See also: [workspace README](https://github.com/nucel-dev/agent-sdk#readme)
+//! and the runnable example `crates/unified/examples/claude_basic.rs`.
+
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod process;
 mod protocol;

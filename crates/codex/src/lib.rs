@@ -1,14 +1,47 @@
-//! Codex provider — wraps the `codex` CLI (OpenAI).
+//! Codex provider — wraps OpenAI's `codex` CLI.
 //!
-//! Based on official Codex CLI documentation:
-//! https://developers.openai.com/codex/cli/reference/
+//! Based on the official [Codex CLI reference](https://developers.openai.com/codex/cli/reference/).
 //!
-//! CLI: `codex exec --json "<prompt>"`
-//! Protocol: JSONL with event types:
-//!   thread.started → turn.started → item.completed → turn.completed
+//! - CLI: `codex exec --json "<prompt>"`
+//! - Protocol: JSONL with event types
+//!   `thread.started → turn.started → item.completed → turn.completed`
+//! - Sandbox modes: `read-only`, `workspace-write`, `danger-full-access`
+//! - Approval: `--ask-for-approval <policy>` (`--full-auto` is deprecated upstream).
 //!
-//! Sandbox modes: read-only, workspace-write, danger-full-access
-//! Approval: --ask-for-approval <policy> (`--full-auto` is deprecated upstream).
+//! Each `query()` re-invokes `codex exec` rather than keeping a long-lived
+//! subprocess: multi-turn is achieved by passing the previous `session_id`
+//! to `resume()`.
+//!
+//! # Minimal example
+//!
+//! ```rust,no_run
+//! use nucel_agent_codex::CodexExecutor;
+//! use nucel_agent_core::{AgentExecutor, SpawnConfig};
+//! use std::path::Path;
+//!
+//! # async fn run() -> nucel_agent_core::Result<()> {
+//! let executor = CodexExecutor::new();
+//! let session = executor.spawn(
+//!     Path::new("/my/repo"),
+//!     "Refactor the cost calculation in src/cost.rs",
+//!     &SpawnConfig { model: Some("gpt-5-codex".into()), ..Default::default() },
+//! ).await?;
+//!
+//! // Save the session id and resume later:
+//! let sid = session.session_id.clone();
+//! session.close().await?;
+//!
+//! let resumed = executor.resume(
+//!     Path::new("/my/repo"), &sid, "Now add tests.", &SpawnConfig::default(),
+//! ).await?;
+//! println!("{}", resumed.query("Did the tests pass?").await?.content);
+//! # Ok(()) }
+//! ```
+//!
+//! See also: [workspace README](https://github.com/nucel-dev/agent-sdk#readme)
+//! and the runnable example `crates/unified/examples/codex_resume.rs`.
+
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

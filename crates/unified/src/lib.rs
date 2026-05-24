@@ -39,6 +39,27 @@
 //! let executor = build_executor("opencode", Some("http://localhost:4096".into()));
 //! # }
 //! ```
+//!
+//! # Runnable examples
+//!
+//! - [`examples/claude_basic.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/claude_basic.rs) — spawn + query + close against Claude Code.
+//! - [`examples/codex_resume.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/codex_resume.rs) — spawn, save the `session_id`, resume, query.
+//! - [`examples/opencode_http.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/opencode_http.rs) — point at a local `opencode serve` and send a prompt.
+//! - [`examples/build_executor.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/build_executor.rs) — runtime provider selection via [`build_executor`].
+//!
+//! Run any of them with:
+//!
+//! ```bash
+//! cargo run -p nucel-agent-sdk --example claude_basic
+//! ```
+//!
+//! # See also
+//!
+//! - [Workspace README](https://github.com/nucel-dev/agent-sdk#readme)
+//! - [`docs/tutorials/`](https://github.com/nucel-dev/agent-sdk/tree/main/docs/tutorials) — getting started, multi-turn, budget control, provider comparison.
+//! - [`CONTRIBUTING.md`](https://github.com/nucel-dev/agent-sdk/blob/main/CONTRIBUTING.md) — adding a new provider.
+
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // Re-export core types.
 pub use nucel_agent_core::{
