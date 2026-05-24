@@ -40,11 +40,16 @@ tokio-test = "0.4"
 
 [profile.dev]
 split-debuginfo = "packed"
+debug = "line-tables-only"
+incremental = false
 
 [profile.release]
 strip = true
 lto = "thin"
 codegen-units = 16
+debug = "line-tables-only"
 
 [profile.test]
 split-debuginfo = "packed"
+debug = "line-tables-only"
+incremental = false
