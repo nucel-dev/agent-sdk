@@ -1,6 +1,6 @@
 [package]
 name = "nucel-agent-sdk"
-version = "0.1.4"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 description = "Unified AI coding agent SDK — provider-agnostic abstraction for Claude Code, Codex, and OpenCode"
@@ -12,10 +12,10 @@ keywords = ["agent", "coding", "claude", "ai", "sdk"]
 categories = ["development-tools", "api-bindings"]
 
 [dependencies]
-nucel-agent-core = { path = "../core", version = "0.1.4" }
-nucel-agent-claude-code = { path = "../claude-code", version = "0.1.4" }
-nucel-agent-codex = { path = "../codex", version = "0.1.3" }
-nucel-agent-opencode = { path = "../opencode", version = "0.1.3" }
+nucel-agent-core = { path = "../core", version = "0.2.0" }
+nucel-agent-claude-code = { path = "../claude-code", version = "0.2.0" }
+nucel-agent-codex = { path = "../codex", version = "0.2.0" }
+nucel-agent-opencode = { path = "../opencode", version = "0.2.0" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,7 +24,28 @@ tokio = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+futures.workspace = true
 wiremock.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "claude_basic"
+path = "examples/claude_basic.rs"
+
+[[example]]
+name = "codex_resume"
+path = "examples/codex_resume.rs"
+
+[[example]]
+name = "opencode_http"
+path = "examples/opencode_http.rs"
+
+[[example]]
+name = "build_executor"
+path = "examples/build_executor.rs"

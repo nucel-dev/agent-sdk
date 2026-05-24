@@ -737,3 +737,10 @@ async fn opencode_spawn_session_missing_id_field() {
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("missing id"));
 }
+
+#[test]
+fn opencode_capabilities_advertise_streaming() {
+    let caps = nucel_agent_opencode::OpencodeExecutor::new().capabilities();
+    assert!(caps.streaming, "OpenCode should advertise SSE streaming");
+    assert!(!caps.hooks);
+}

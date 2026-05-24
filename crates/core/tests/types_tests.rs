@@ -18,11 +18,13 @@ fn cost_add_accumulates() {
         input_tokens: 100,
         output_tokens: 50,
         total_usd: 0.05,
+            ..Default::default()
     };
     let b = AgentCost {
         input_tokens: 200,
         output_tokens: 75,
         total_usd: 0.10,
+            ..Default::default()
     };
     let sum = a + b;
     assert_eq!(sum.input_tokens, 300);
@@ -36,6 +38,7 @@ fn cost_serialization_roundtrip() {
         input_tokens: 42,
         output_tokens: 17,
         total_usd: 1.23,
+            ..Default::default()
     };
     let json = serde_json::to_string(&cost).unwrap();
     let back: AgentCost = serde_json::from_str(&json).unwrap();
@@ -63,6 +66,7 @@ fn response_serialization_roundtrip() {
             input_tokens: 100,
             output_tokens: 50,
             total_usd: 0.01,
+            ..Default::default()
         },
         confidence: Some(0.85),
         requests_escalation: false,
@@ -163,6 +167,9 @@ fn spawn_config_with_values() {
         system_prompt: Some("You are a coding assistant.".into()),
         reasoning: Some("high".into()),
         max_turns: Some(10),
+        hook_config: None,
+        cache_breakpoints: vec![],
+        thinking_budget: None,
     };
     assert_eq!(config.model.as_deref(), Some("claude-opus-4-6"));
     assert_eq!(config.max_tokens, Some(8192));
@@ -242,6 +249,7 @@ fn cost_add_identity() {
         input_tokens: 50,
         output_tokens: 25,
         total_usd: 0.03,
+            ..Default::default()
     };
     let zero = AgentCost::default();
     let sum = a.clone() + zero;
@@ -256,11 +264,13 @@ fn cost_large_token_counts() {
         input_tokens: u64::MAX / 2,
         output_tokens: u64::MAX / 2,
         total_usd: 999_999.99,
+            ..Default::default()
     };
     let b = AgentCost {
         input_tokens: 1,
         output_tokens: 1,
         total_usd: 0.01,
+            ..Default::default()
     };
     let sum = a + b;
     assert_eq!(sum.input_tokens, u64::MAX / 2 + 1);
@@ -430,6 +440,7 @@ async fn session_query_and_cost_via_mock() {
                     input_tokens: 10,
                     output_tokens: 5,
                     total_usd: 0.001,
+            ..Default::default()
                 },
                 ..Default::default()
             })
@@ -439,6 +450,7 @@ async fn session_query_and_cost_via_mock() {
                 input_tokens: 10,
                 output_tokens: 5,
                 total_usd: 0.001,
+            ..Default::default()
             })
         }
         async fn close(&self) -> nucel_agent_core::Result<()> {

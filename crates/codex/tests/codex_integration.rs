@@ -64,3 +64,12 @@ fn codex_availability_checks_cli() {
         );
     }
 }
+
+#[test]
+fn codex_capabilities_advertise_streaming_no_hooks() {
+    let caps = nucel_agent_codex::CodexExecutor::new().capabilities();
+    assert!(caps.streaming, "Codex should advertise streaming");
+    assert!(!caps.hooks, "Codex should not advertise hooks");
+    assert!(!caps.prompt_caching);
+    assert!(!caps.extended_thinking);
+}

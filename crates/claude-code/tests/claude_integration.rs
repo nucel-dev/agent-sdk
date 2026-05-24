@@ -85,3 +85,29 @@ async fn claude_spawn_returns_cli_not_found_when_missing() {
         "expected CliNotFound, got: {err}"
     );
 }
+
+#[test]
+fn claude_capabilities_advertise_streaming_hooks_caching_thinking() {
+    let caps = ClaudeCodeExecutor::new().capabilities();
+    assert!(caps.streaming, "Claude Code should advertise streaming");
+    assert!(caps.hooks, "Claude Code should advertise hooks");
+    assert!(caps.prompt_caching, "Claude Code should advertise prompt_caching");
+    assert!(caps.extended_thinking, "Claude Code should advertise extended_thinking");
+}
+
+#[test]
+fn claude_accepts_hook_config_and_thinking_budget_in_spawn_config() {
+    let cfg = SpawnConfig {
+        hook_config: Some(HookConfig {
+            pre_tool_use: Some(HookHandler::new("/bin/echo pre").with_matcher("Bash")),
+            ..Default::default()
+        }),
+        cache_breakpoints: vec![CachePoint::ephemeral("system")],
+        thinking_budget: Some(8_192),
+        ..Default::default()
+    };
+    // Just exercising the config plumbing without spawning.
+    assert!(cfg.hook_config.is_some());
+    assert_eq!(cfg.cache_breakpoints.len(), 1);
+    assert_eq!(cfg.thinking_budget, Some(8_192));
+}

@@ -182,6 +182,14 @@ pub fn parse_message(line: &str) -> Result<ClaudeMessage> {
                 .get("output_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            let cache_read_tokens = usage
+                .get("cache_read_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let cache_creation_tokens = usage
+                .get("cache_creation_input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
             // Build cost from modelUsage if available (more accurate).
             let mut model_costs: Vec<ModelUsage> = Vec::new();
@@ -216,6 +224,8 @@ pub fn parse_message(line: &str) -> Result<ClaudeMessage> {
                 cost: AgentCost {
                     input_tokens,
                     output_tokens,
+                    cache_read_tokens,
+                    cache_creation_tokens,
                     total_usd: total_cost_usd,
                 },
                 session_id,

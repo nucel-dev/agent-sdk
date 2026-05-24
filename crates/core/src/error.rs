@@ -3,6 +3,7 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, AgentError>;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AgentError {
     #[error("provider error ({provider}): {message}")]
     Provider { provider: String, message: String },
@@ -24,6 +25,18 @@ pub enum AgentError {
 
     #[error("agent requested escalation")]
     EscalationRequested,
+
+    /// Streaming was interrupted before a terminal event was received.
+    #[error("stream interrupted: {0}")]
+    StreamInterrupted(String),
+
+    /// Rate limit hit; the upstream provider is throttling.
+    #[error("rate limited: {message}")]
+    RateLimited { message: String },
+
+    /// Hook execution failed.
+    #[error("hook '{hook}' failed: {message}")]
+    HookFailed { hook: String, message: String },
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

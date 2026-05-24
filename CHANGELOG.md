@@ -9,13 +9,88 @@ Crate versions covered in this file:
 
 | Crate | Latest |
 |---|---|
-| `nucel-agent-core` | `0.1.4` |
-| `nucel-agent-claude-code` | `0.1.4` |
-| `nucel-agent-codex` | `0.1.3` |
-| `nucel-agent-opencode` | `0.1.3` |
-| `nucel-agent-sdk` (umbrella) | `0.1.4` |
+| `nucel-agent-core` | `0.2.0` |
+| `nucel-agent-claude-code` | `0.2.0` |
+| `nucel-agent-codex` | `0.2.0` |
+| `nucel-agent-opencode` | `0.2.0` |
+| `nucel-agent-sdk` (umbrella) | `0.2.0` |
 
 ---
+
+## [0.2.0] — 2026-05-24
+
+**Breaking release.** Closes audit gaps G37–G40 (hooks, streaming, prompt
+cache control, extended thinking). Bumps all five crates from 0.1.x to
+0.2.0 together. Downstream consumers must:
+
+- Wildcard their `match` arms on `AgentError` (now `#[non_exhaustive]`).
+- Construct `AgentCost` with `..Default::default()` (two new fields).
+- Construct `AgentCapabilities` with `..Default::default()` (four new
+  fields) — or fill them explicitly.
+- Construct `SpawnConfig` with `..Default::default()` (three new fields).
+
+### Added — `nucel-agent-core` 0.2.0
+
+- **Streaming API** — `SessionImpl::query_stream()` returns `impl Stream<
+  Item = Result<MessageEvent>>`. A default implementation collects the
+  output of `query()` for back-compat; providers override with native
+  event-by-event streaming.
+- `MessageEvent` enum (`#[non_exhaustive]`) — `TextChunk`, `ToolUse`,
+  `ToolResult`, `ApiRetry`, `RateLimit`, `Thinking`, `ResultDone`,
+  `Error`. Tagged on `type` for JSON wire format.
+- `EventStream` boxed-stream alias.
+- `AgentSession::query_stream()` + `AgentSession::collect_stream()`
+  convenience.
+- `HookConfig` / `HookHandler` types — `pre_tool_use`, `post_tool_use`,
+  `on_stop`, `user_prompt_submit`. Plumbed through `SpawnConfig.hook_config`.
+- `CachePoint` type + `SpawnConfig.cache_breakpoints: Vec<CachePoint>`
+  for Anthropic-style prompt-cache control.
+- `SpawnConfig.thinking_budget: Option<u32>` (extended thinking tokens).
+- `AgentCost.cache_read_tokens` + `cache_creation_tokens` fields with
+  `#[serde(default)]` for forward-compat reads.
+- `AgentCapabilities` gains `streaming`, `hooks`, `prompt_caching`,
+  `extended_thinking` booleans + a `Default` impl.
+- New `AgentError` variants: `StreamInterrupted(String)`,
+  `RateLimited { message }`, `HookFailed { hook, message }`. Enum is now
+  `#[non_exhaustive]`.
+
+### Added — `nucel-agent-claude-code` 0.2.0
+
+- Native `query_stream()` — parses `claude --output-format stream-json`
+  line-by-line and emits `TextChunk` / `ToolUse` / `ToolResult` /
+  `Thinking` / `RateLimit` / `ResultDone` as they arrive (no buffering
+  until completion).
+- `SpawnConfig.hook_config` → serialized into Claude Code's
+  `settings.json` `hooks` schema and passed via `--settings <json>`.
+- `SpawnConfig.thinking_budget` → `--thinking-budget-tokens <n>`.
+- Cache stats from `usage.cache_read_input_tokens` /
+  `cache_creation_input_tokens` populate `AgentCost.cache_read_tokens` /
+  `cache_creation_tokens`.
+- `capabilities.streaming = true`, `hooks = true`,
+  `prompt_caching = true`, `extended_thinking = true`.
+
+### Added — `nucel-agent-codex` 0.2.0
+
+- Native `query_stream()` — drives `codex exec --json` and emits
+  `TextChunk` for each `item.completed` agent message, terminating with
+  `ResultDone` carrying token usage from `turn.completed`.
+- `capabilities.streaming = true`. Hooks, prompt caching, extended
+  thinking remain `false` (not supported by Codex CLI).
+
+### Added — `nucel-agent-opencode` 0.2.0
+
+- Native `query_stream()` — opens `GET /event` SSE alongside
+  `POST /session/{id}/prompt`, forwards `message.part.updated` text /
+  tool / reasoning events as they arrive, terminates with `ResultDone`
+  from the prompt response.
+- `capabilities.streaming = true`. Other 0.2.0 features remain
+  `false` (not supported by OpenCode server today).
+
+### Changed — `nucel-agent-sdk` 0.2.0
+
+- Re-exports the new public types: `MessageEvent`, `EventStream`,
+  `HookConfig`, `HookHandler`, `CachePoint`, `SessionImpl`.
+- Provider dep pins bumped to 0.2.0 across the board.
 
 ## [0.1.4 / 0.1.3] — 2026-05-24
 
@@ -200,6 +275,7 @@ Commits: `2b24ac3`, `2d98190`, `0113dd0`, `6a340e0`, `b867bb4`, `b240bfd`,
 
 ---
 
+[0.2.0]: https://github.com/nucel-dev/agent-sdk/releases/tag/v0.2.0
 [0.1.3]: https://github.com/nucel-dev/agent-sdk/releases/tag/v0.1.3
 [0.1.2]: https://github.com/nucel-dev/agent-sdk/releases/tag/v0.1.2
 [0.1.1]: https://github.com/nucel-dev/agent-sdk/releases/tag/v0.1.1

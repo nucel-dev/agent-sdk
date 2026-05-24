@@ -1,11 +1,16 @@
 use chrono::{DateTime, Utc};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::stream::{self, Stream, StreamExt};
 
 use crate::error::Result;
-use crate::types::{AgentCost, AgentResponse, ExecutorType};
+use crate::types::{AgentCost, AgentResponse, ExecutorType, MessageEvent};
+
+/// Boxed event stream — what `query_stream()` returns.
+pub type EventStream = Pin<Box<dyn Stream<Item = Result<MessageEvent>> + Send>>;
 
 /// Metadata about a session (persistable, cloneable).
 #[derive(Debug, Clone)]
@@ -22,6 +27,31 @@ pub struct SessionMetadata {
 #[async_trait]
 pub trait SessionImpl: Send + Sync {
     async fn query(&self, prompt: &str) -> Result<AgentResponse>;
+
+    /// Streaming variant of `query()`.
+    ///
+    /// Returns a stream of [`MessageEvent`]s as they arrive. The stream MUST
+    /// terminate with either [`MessageEvent::ResultDone`] or
+    /// [`MessageEvent::Error`].
+    ///
+    /// Default impl is back-compat: it calls `query()` and replays a single
+    /// `TextChunk` + `ResultDone`. Providers override this to emit events
+    /// live as they arrive on the wire.
+    async fn query_stream(&self, prompt: &str) -> Result<EventStream> {
+        let resp = self.query(prompt).await?;
+        let events = vec![
+            Ok(MessageEvent::TextChunk {
+                text: resp.content.clone(),
+            }),
+            Ok(MessageEvent::ResultDone {
+                cost: resp.cost.clone(),
+                content: resp.content,
+                is_error: false,
+            }),
+        ];
+        Ok(Box::pin(stream::iter(events)))
+    }
+
     async fn total_cost(&self) -> Result<AgentCost>;
     async fn close(&self) -> Result<()>;
 }
@@ -80,6 +110,75 @@ impl AgentSession {
     /// Send a follow-up prompt to the agent.
     pub async fn query(&self, prompt: &str) -> Result<AgentResponse> {
         self.inner.query(prompt).await
+    }
+
+    /// Send a follow-up prompt and stream events as they arrive.
+    pub async fn query_stream(&self, prompt: &str) -> Result<EventStream> {
+        self.inner.query_stream(prompt).await
+    }
+
+    /// Convenience: collect a stream into an `AgentResponse`.
+    pub async fn collect_stream(mut stream: EventStream) -> Result<AgentResponse> {
+        let mut content = String::new();
+        let mut cost = AgentCost::default();
+        let mut final_content: Option<String> = None;
+        let mut tool_calls: Vec<crate::types::ToolCall> = Vec::new();
+        let mut pending_tool: Option<crate::types::ToolCall> = None;
+        while let Some(evt) = stream.next().await {
+            match evt? {
+                MessageEvent::TextChunk { text } => content.push_str(&text),
+                MessageEvent::ToolUse { name, input, .. } => {
+                    pending_tool = Some(crate::types::ToolCall {
+                        name,
+                        args: input,
+                        result: None,
+                    });
+                }
+                MessageEvent::ToolResult { success, output, .. } => {
+                    if let Some(mut t) = pending_tool.take() {
+                        t.result = Some(crate::types::ToolResult { success, output });
+                        tool_calls.push(t);
+                    }
+                }
+                MessageEvent::ResultDone {
+                    cost: c,
+                    content: final_text,
+                    is_error,
+                } => {
+                    cost = c;
+                    if is_error {
+                        return Err(crate::error::AgentError::Provider {
+                            provider: "stream".into(),
+                            message: final_text,
+                        });
+                    }
+                    final_content = Some(final_text);
+                    break;
+                }
+                MessageEvent::Error { message } => {
+                    return Err(crate::error::AgentError::Provider {
+                        provider: "stream".into(),
+                        message,
+                    });
+                }
+                MessageEvent::RateLimit { message } => {
+                    return Err(crate::error::AgentError::RateLimited { message });
+                }
+                _ => {}
+            }
+        }
+        if let Some(c) = final_content {
+            if !c.is_empty() {
+                content = c;
+            }
+        }
+        Ok(AgentResponse {
+            content,
+            cost,
+            confidence: None,
+            requests_escalation: false,
+            tool_calls,
+        })
     }
 
     /// Get the accumulated cost of this session.

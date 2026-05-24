@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::session::AgentSession;
-use crate::types::{ExecutorType, PermissionMode};
+use crate::types::{CachePoint, ExecutorType, HookConfig, PermissionMode};
 
 /// Capability flags for a provider implementation.
 #[derive(Debug, Clone)]
@@ -19,6 +19,30 @@ pub struct AgentCapabilities {
     pub autonomous_mode: bool,
     /// Supports structured output via JSON Schema.
     pub structured_output: bool,
+    /// Supports event-level streaming via `query_stream()`.
+    pub streaming: bool,
+    /// Supports user-defined hooks (pre/post tool, on stop).
+    pub hooks: bool,
+    /// Supports Anthropic-style prompt cache breakpoints.
+    pub prompt_caching: bool,
+    /// Supports extended-thinking budget.
+    pub extended_thinking: bool,
+}
+
+impl Default for AgentCapabilities {
+    fn default() -> Self {
+        Self {
+            session_resume: false,
+            token_usage: false,
+            mcp_support: false,
+            autonomous_mode: false,
+            structured_output: false,
+            streaming: false,
+            hooks: false,
+            prompt_caching: false,
+            extended_thinking: false,
+        }
+    }
 }
 
 /// Runtime availability of the provider.
@@ -47,6 +71,13 @@ pub struct SpawnConfig {
     pub reasoning: Option<String>,
     /// Maximum autonomous turns before returning (0 or None = provider default).
     pub max_turns: Option<u32>,
+    /// Hook handlers (Claude Code today; no-op on other providers).
+    pub hook_config: Option<HookConfig>,
+    /// Prompt-cache breakpoints (Claude Code today; no-op elsewhere).
+    pub cache_breakpoints: Vec<CachePoint>,
+    /// Extended-thinking budget in tokens (Claude Code's
+    /// `--thinking-budget-tokens`). Ignored by other providers.
+    pub thinking_budget: Option<u32>,
 }
 
 /// Configuration for the executor itself (not per-session).

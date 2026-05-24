@@ -197,6 +197,8 @@ impl OpencodeClient {
             cost: AgentCost {
                 input_tokens,
                 output_tokens,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
                 total_usd: cost_usd,
             },
             confidence: None,
@@ -205,6 +207,169 @@ impl OpencodeClient {
         })
     }
 
+
+
+    /// Open an SSE stream against `GET /event` and emit `MessageEvent`s.
+    ///
+    /// The OpenCode server's `/event` endpoint emits JSON events for the
+    /// active session(s). We translate the subset we recognize and forward
+    /// the rest as no-ops.
+    ///
+    /// The caller is responsible for sending the prompt via [`Self::prompt`]
+    /// in parallel — `/event` is read-only.
+    pub async fn stream_events(&self, session_id: String, prompt: String, config: SpawnConfig, budget: f64)
+        -> Result<nucel_agent_core::EventStream>
+    {
+        use futures::StreamExt;
+        use nucel_agent_core::{AgentError, MessageEvent, AgentCost};
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<MessageEvent>>(64);
+        let http = self.http.clone();
+        let base_url = self.base_url.clone();
+        let api_user = self.api_user.clone();
+        let api_password = self.api_password.clone();
+        let directory = self.directory.clone();
+        let client_clone = self.clone();
+
+        tokio::spawn(async move {
+            // Open SSE stream first.
+            let url = format!("{}/event", base_url);
+            let mut req = http.get(&url);
+            if let (Some(u), Some(pw)) = (api_user.as_deref(), api_password.as_deref()) {
+                req = req.basic_auth(u, Some(pw));
+            }
+            if let Some(d) = &directory {
+                req = req.query(&[("directory", d.as_str())]);
+            }
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(AgentError::Provider {
+                        provider: "opencode".into(),
+                        message: format!("failed to open SSE stream: {e}"),
+                    })).await;
+                    return;
+                }
+            };
+            if !resp.status().is_success() {
+                let _ = tx.send(Err(AgentError::Provider {
+                    provider: "opencode".into(),
+                    message: format!("SSE stream rejected: {}", resp.status()),
+                })).await;
+                return;
+            }
+
+            // Fire the prompt request in the background; the response carries
+            // the final cost/tokens which we use to emit ResultDone.
+            let prompt_tx = tx.clone();
+            let session_for_prompt = session_id.clone();
+            let prompt_owned = prompt.clone();
+            let config_for_prompt = config.clone();
+            let prompt_handle = tokio::spawn(async move {
+                client_clone.prompt(&session_for_prompt, &prompt_owned, &config_for_prompt, budget).await
+            });
+
+            // Parse SSE event-stream from the response body.
+            let mut bytes_stream = resp.bytes_stream();
+            let mut buffer = String::new();
+            let mut data_buf = String::new();
+            'outer: while let Some(chunk_res) = bytes_stream.next().await {
+                let chunk = match chunk_res {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.send(Err(AgentError::Provider {
+                            provider: "opencode".into(),
+                            message: format!("SSE read error: {e}"),
+                        })).await;
+                        break;
+                    }
+                };
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                // Process whole lines.
+                while let Some(idx) = buffer.find('\n') {
+                    let line = buffer[..idx].trim_end_matches('\r').to_string();
+                    buffer.drain(..=idx);
+                    if line.is_empty() {
+                        // Dispatch event boundary.
+                        if !data_buf.is_empty() {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data_buf) {
+                                handle_sse_event(&v, &tx).await;
+                            }
+                            data_buf.clear();
+                        }
+                        // Check if prompt response arrived to terminate.
+                        if prompt_handle.is_finished() {
+                            break 'outer;
+                        }
+                    } else if let Some(rest) = line.strip_prefix("data:") {
+                        if !data_buf.is_empty() { data_buf.push('\n'); }
+                        data_buf.push_str(rest.trim_start());
+                    }
+                    // Other prefixes (event:, id:, retry:) ignored.
+                }
+            }
+
+            // Now finalize from the prompt response.
+            let final_resp = prompt_handle.await;
+            match final_resp {
+                Ok(Ok(resp)) => {
+                    let _ = prompt_tx.send(Ok(MessageEvent::ResultDone {
+                        cost: resp.cost.clone(),
+                        content: resp.content,
+                        is_error: false,
+                    })).await;
+                }
+                Ok(Err(e)) => {
+                    let _ = prompt_tx.send(Err(e)).await;
+                }
+                Err(_join) => {
+                    let _ = prompt_tx.send(Err(AgentError::Provider {
+                        provider: "opencode".into(),
+                        message: "prompt task panicked".into(),
+                    })).await;
+                }
+            }
+        });
+
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Box::pin(stream))
+    }
+}
+
+async fn handle_sse_event(v: &serde_json::Value, tx: &tokio::sync::mpsc::Sender<Result<nucel_agent_core::MessageEvent>>) {
+    use nucel_agent_core::MessageEvent;
+    let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let props = v.get("properties").unwrap_or(v);
+    match kind {
+        "message.part.updated" | "message.updated" => {
+            if let Some(part) = props.get("part") {
+                let pt = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                match pt {
+                    "text" => {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            let _ = tx.send(Ok(MessageEvent::TextChunk { text: text.to_string() })).await;
+                        }
+                    }
+                    "tool" => {
+                        let name = part.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                        let id = part.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+                        let input = part.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                        let _ = tx.send(Ok(MessageEvent::ToolUse { id, name, input })).await;
+                    }
+                    "reasoning" => {
+                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                            let _ = tx.send(Ok(MessageEvent::Thinking { text: text.to_string() })).await;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+impl OpencodeClient {
     /// Best-effort abort of an active session.
     pub async fn abort(&self, session_id: &str) -> Result<()> {
         let url = format!("{}/session/{}/abort", self.base_url, session_id);

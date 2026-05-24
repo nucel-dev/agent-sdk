@@ -19,7 +19,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nucel_agent_core::{AgentCost, AgentError, PermissionMode, Result, SpawnConfig};
+use nucel_agent_core::{AgentCost, AgentError, EventStream, HookConfig, MessageEvent, PermissionMode, Result, SpawnConfig};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
@@ -49,10 +49,10 @@ pub(crate) fn permission_mode_to_cli(mode: PermissionMode) -> &'static str {
 
 /// Manages a Claude Code CLI subprocess.
 pub struct ClaudeProcess {
-    child: Child,
-    stdout_reader: BufReader<tokio::process::ChildStdout>,
+    pub(crate) child: Child,
+    pub(crate) stdout_reader: BufReader<tokio::process::ChildStdout>,
     /// Shared rolling stderr buffer. Populated by a background drainer task.
-    stderr_buf: Arc<AsyncMutex<String>>,
+    pub(crate) stderr_buf: Arc<AsyncMutex<String>>,
     stdin_writer: Option<tokio::process::ChildStdin>,
     /// The pre-minted session id passed via `--session-id`. Returned to caller
     /// for round-trip resume.
@@ -101,6 +101,19 @@ impl ClaudeProcess {
         // Reasoning effort.
         if let Some(effort) = &config.reasoning {
             cmd.arg("--effort").arg(effort);
+        }
+
+        // Extended-thinking budget (Claude only).
+        if let Some(budget) = config.thinking_budget {
+            cmd.arg("--thinking-budget-tokens").arg(budget.to_string());
+        }
+
+        // Hooks -> --settings <json>.
+        if let Some(hook_cfg) = &config.hook_config {
+            let settings = hook_config_to_settings_json(hook_cfg);
+            if let Ok(serialized) = serde_json::to_string(&settings) {
+                cmd.arg("--settings").arg(serialized);
+            }
         }
 
         // Environment.
@@ -415,11 +428,7 @@ impl ClaudeProcess {
 
         Ok(super::AgentResponse {
             content,
-            cost: AgentCost {
-                input_tokens,
-                output_tokens,
-                total_usd: total_cost_usd,
-            },
+            cost: AgentCost { input_tokens, output_tokens, cache_read_tokens: 0, cache_creation_tokens: 0, total_usd: total_cost_usd },
             confidence: None,
             requests_escalation: false,
             tool_calls: vec![],
@@ -614,3 +623,36 @@ mod tests {
         assert!(out.contains("stderr:"));
     }
 }
+
+/// Serialize a [`HookConfig`] into Claude Code's `settings.json` `hooks` shape.
+pub(crate) fn hook_config_to_settings_json(cfg: &HookConfig) -> serde_json::Value {
+    fn handler_to_entry(h: &nucel_agent_core::HookHandler) -> serde_json::Value {
+        let mut hook = serde_json::json!({
+            "type": "command",
+            "command": h.command,
+        });
+        if let Some(t) = h.timeout_seconds {
+            hook["timeout"] = serde_json::json!(t);
+        }
+        let mut entry = serde_json::json!({ "hooks": [hook] });
+        if let Some(m) = &h.matcher {
+            entry["matcher"] = serde_json::json!(m);
+        }
+        entry
+    }
+    let mut hooks = serde_json::Map::new();
+    if let Some(h) = &cfg.pre_tool_use {
+        hooks.insert("PreToolUse".into(), serde_json::json!([handler_to_entry(h)]));
+    }
+    if let Some(h) = &cfg.post_tool_use {
+        hooks.insert("PostToolUse".into(), serde_json::json!([handler_to_entry(h)]));
+    }
+    if let Some(h) = &cfg.on_stop {
+        hooks.insert("Stop".into(), serde_json::json!([handler_to_entry(h)]));
+    }
+    if let Some(h) = &cfg.user_prompt_submit {
+        hooks.insert("UserPromptSubmit".into(), serde_json::json!([handler_to_entry(h)]));
+    }
+    serde_json::json!({ "hooks": hooks })
+}
+

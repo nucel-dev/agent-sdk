@@ -473,3 +473,82 @@ async fn e2e_codex_real_cli_session() {
         }
     }
 }
+
+// ── 0.2.0 streaming tests ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn e2e_default_query_stream_replays_query_result() {
+    use std::sync::Arc;
+    use async_trait::async_trait;
+    use futures::StreamExt;
+    use nucel_agent_sdk::{
+        AgentCost, AgentResponse, AgentSession, ExecutorType, MessageEvent, Result, SessionImpl,
+    };
+
+    struct EchoSession;
+    #[async_trait]
+    impl SessionImpl for EchoSession {
+        async fn query(&self, prompt: &str) -> Result<AgentResponse> {
+            Ok(AgentResponse {
+                content: format!("echo: {prompt}"),
+                cost: AgentCost { input_tokens: 1, output_tokens: 2, total_usd: 0.0, ..Default::default() },
+                ..Default::default()
+            })
+        }
+        async fn total_cost(&self) -> Result<AgentCost> { Ok(AgentCost::default()) }
+        async fn close(&self) -> Result<()> { Ok(()) }
+    }
+
+    let session = AgentSession::new(
+        "test",
+        ExecutorType::ClaudeCode,
+        "/tmp",
+        None,
+        Arc::new(EchoSession),
+    );
+    let mut s = session.query_stream("hello").await.unwrap();
+    let mut chunks = Vec::new();
+    let mut terminal = false;
+    while let Some(evt) = s.next().await {
+        match evt.unwrap() {
+            MessageEvent::TextChunk { text } => chunks.push(text),
+            MessageEvent::ResultDone { content, .. } => {
+                assert_eq!(content, "echo: hello");
+                terminal = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(terminal);
+    assert_eq!(chunks.concat(), "echo: hello");
+}
+
+#[tokio::test]
+async fn e2e_collect_stream_round_trips_through_session() {
+    use std::sync::Arc;
+    use async_trait::async_trait;
+    use nucel_agent_sdk::{
+        AgentCost, AgentResponse, AgentSession, ExecutorType, Result, SessionImpl,
+    };
+
+    struct S;
+    #[async_trait]
+    impl SessionImpl for S {
+        async fn query(&self, _: &str) -> Result<AgentResponse> {
+            Ok(AgentResponse {
+                content: "hi".into(),
+                cost: AgentCost { input_tokens: 5, output_tokens: 7, total_usd: 0.01, cache_read_tokens: 100, cache_creation_tokens: 50 },
+                ..Default::default()
+            })
+        }
+        async fn total_cost(&self) -> Result<AgentCost> { Ok(AgentCost::default()) }
+        async fn close(&self) -> Result<()> { Ok(()) }
+    }
+
+    let session = AgentSession::new("t", ExecutorType::ClaudeCode, "/tmp", None, Arc::new(S));
+    let stream = session.query_stream("hi").await.unwrap();
+    let resp = AgentSession::collect_stream(stream).await.unwrap();
+    assert_eq!(resp.content, "hi");
+    assert_eq!(resp.cost.input_tokens, 5);
+    assert_eq!(resp.cost.cache_read_tokens, 100);
+}

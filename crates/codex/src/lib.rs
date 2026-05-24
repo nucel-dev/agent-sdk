@@ -1,14 +1,47 @@
-//! Codex provider — wraps the `codex` CLI (OpenAI).
+//! Codex provider — wraps OpenAI's `codex` CLI.
 //!
-//! Based on official Codex CLI documentation:
-//! https://developers.openai.com/codex/cli/reference/
+//! Based on the official [Codex CLI reference](https://developers.openai.com/codex/cli/reference/).
 //!
-//! CLI: `codex exec --json "<prompt>"`
-//! Protocol: JSONL with event types:
-//!   thread.started → turn.started → item.completed → turn.completed
+//! - CLI: `codex exec --json "<prompt>"`
+//! - Protocol: JSONL with event types
+//!   `thread.started → turn.started → item.completed → turn.completed`
+//! - Sandbox modes: `read-only`, `workspace-write`, `danger-full-access`
+//! - Approval: `--ask-for-approval <policy>` (`--full-auto` is deprecated upstream).
 //!
-//! Sandbox modes: read-only, workspace-write, danger-full-access
-//! Approval: --ask-for-approval <policy> (`--full-auto` is deprecated upstream).
+//! Each `query()` re-invokes `codex exec` rather than keeping a long-lived
+//! subprocess: multi-turn is achieved by passing the previous `session_id`
+//! to `resume()`.
+//!
+//! # Minimal example
+//!
+//! ```rust,no_run
+//! use nucel_agent_codex::CodexExecutor;
+//! use nucel_agent_core::{AgentExecutor, SpawnConfig};
+//! use std::path::Path;
+//!
+//! # async fn run() -> nucel_agent_core::Result<()> {
+//! let executor = CodexExecutor::new();
+//! let session = executor.spawn(
+//!     Path::new("/my/repo"),
+//!     "Refactor the cost calculation in src/cost.rs",
+//!     &SpawnConfig { model: Some("gpt-5-codex".into()), ..Default::default() },
+//! ).await?;
+//!
+//! // Save the session id and resume later:
+//! let sid = session.session_id.clone();
+//! session.close().await?;
+//!
+//! let resumed = executor.resume(
+//!     Path::new("/my/repo"), &sid, "Now add tests.", &SpawnConfig::default(),
+//! ).await?;
+//! println!("{}", resumed.query("Did the tests pass?").await?.content);
+//! # Ok(()) }
+//! ```
+//!
+//! See also: [workspace README](https://github.com/nucel-dev/agent-sdk#readme)
+//! and the runnable example `crates/unified/examples/codex_resume.rs`.
+
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -22,7 +55,8 @@ use uuid::Uuid;
 
 use nucel_agent_core::{
     AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
-    AvailabilityStatus, ExecutorType, PermissionMode, Result, SessionImpl, SpawnConfig,
+    AvailabilityStatus, EventStream, ExecutorType, MessageEvent, PermissionMode, Result,
+    SessionImpl, SpawnConfig,
 };
 
 /// Default timeout for Codex queries (10 minutes).
@@ -466,6 +500,49 @@ impl SessionImpl for CodexSessionImpl {
         })
     }
 
+    async fn query_stream(&self, prompt: &str) -> Result<EventStream> {
+        {
+            let c = self.cost.lock().unwrap();
+            if c.total_usd >= self.budget {
+                return Err(AgentError::BudgetExceeded {
+                    limit: self.budget,
+                    spent: c.total_usd,
+                });
+            }
+        }
+        let resume_id = {
+            let g = self.thread_id.lock().unwrap();
+            if g.is_empty() { None } else { Some(g.clone()) }
+        };
+        let working_dir = self.working_dir.clone();
+        let config = self.config.clone();
+        let api_key = self.api_key.clone();
+        let cost_handle = self.cost.clone();
+        let thread_handle = self.thread_id.clone();
+        let budget = self.budget;
+        let prompt_owned = prompt.to_string();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<MessageEvent>>(64);
+
+        tokio::spawn(async move {
+            stream_codex(
+                &working_dir,
+                &prompt_owned,
+                &config,
+                api_key.as_deref(),
+                resume_id.as_deref(),
+                budget,
+                cost_handle,
+                thread_handle,
+                tx,
+            )
+            .await;
+        });
+
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Box::pin(stream))
+    }
+
     async fn total_cost(&self) -> Result<AgentCost> {
         Ok(self.cost.lock().unwrap().clone())
     }
@@ -473,6 +550,179 @@ impl SessionImpl for CodexSessionImpl {
     async fn close(&self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Run codex exec and emit MessageEvents as JSONL lines arrive.
+#[allow(clippy::too_many_arguments)]
+async fn stream_codex(
+    working_dir: &Path,
+    prompt: &str,
+    config: &SpawnConfig,
+    api_key: Option<&str>,
+    resume_thread_id: Option<&str>,
+    budget: f64,
+    cost_handle: Arc<Mutex<AgentCost>>,
+    thread_handle: Arc<Mutex<String>>,
+    tx: tokio::sync::mpsc::Sender<Result<MessageEvent>>,
+) {
+    let mut cmd = Command::new("codex");
+    cmd.current_dir(working_dir);
+    cmd.arg("exec");
+    if let Some(tid) = resume_thread_id {
+        cmd.arg("resume").arg(tid);
+    }
+    cmd.arg("--json");
+    cmd.arg("--skip-git-repo-check");
+    cmd.arg("--color").arg("never");
+    if let Some(model) = &config.model {
+        cmd.arg("--model").arg(model);
+    }
+    permission_to_codex_args(&mut cmd, config.permission_mode);
+    cmd.arg("--cd").arg(working_dir);
+    cmd.arg(prompt);
+    if let Some(key) = api_key {
+        cmd.env("OPENAI_API_KEY", key);
+    }
+    for (k, v) in &config.env {
+        cmd.env(k, v);
+    }
+
+    let mut child = match cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let err = if e.kind() == std::io::ErrorKind::NotFound {
+                AgentError::CliNotFound { cli_name: "codex".into() }
+            } else {
+                AgentError::Io(e)
+            };
+            let _ = tx.send(Err(err)).await;
+            return;
+        }
+    };
+
+    let stdout = match child.stdout.take() {
+        Some(s) => s,
+        None => {
+            let _ = tx
+                .send(Err(AgentError::Provider {
+                    provider: "codex".into(),
+                    message: "failed to capture stdout".into(),
+                }))
+                .await;
+            return;
+        }
+    };
+
+    // Drain stderr
+    let stderr_buf: Arc<AsyncMutex<String>> = Arc::new(AsyncMutex::new(String::new()));
+    if let Some(err) = child.stderr.take() {
+        let buf = stderr_buf.clone();
+        tokio::spawn(drain_stderr(err, buf));
+    }
+
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let mut input_tokens = 0_u64;
+    let mut output_tokens = 0_u64;
+    let mut content = String::new();
+    let mut thread_id_local = String::new();
+    let mut saw_terminal = false;
+    let mut had_error: Option<String> = None;
+
+    let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            line.clear();
+            let n = match reader.read_line(&mut line).await {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = tx.send(Err(AgentError::Io(e))).await;
+                    return;
+                }
+            };
+            if n == 0 { break; }
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            match parse_codex_line(trimmed) {
+                Ok(Some(CodexEvent::ThreadStarted { thread_id })) => {
+                    thread_id_local = thread_id;
+                }
+                Ok(Some(CodexEvent::TurnStarted)) => {}
+                Ok(Some(CodexEvent::Message(text))) => {
+                    if !content.is_empty() { content.push('\n'); }
+                    content.push_str(&text);
+                    let _ = tx.send(Ok(MessageEvent::TextChunk { text })).await;
+                }
+                Ok(Some(CodexEvent::TurnCompleted { input_tokens: i, output_tokens: o })) => {
+                    input_tokens = i;
+                    output_tokens = o;
+                }
+                Ok(Some(CodexEvent::Error(msg))) => {
+                    had_error = Some(msg);
+                }
+                Ok(Some(CodexEvent::Other)) | Ok(None) => {}
+                Err(_) => {}
+            }
+        }
+    }).await;
+
+    if result.is_err() {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        let tail = stderr_buf.lock().await.clone();
+        let _ = tx
+            .send(Err(AgentError::Provider {
+                provider: "codex".into(),
+                message: format!("stream timed out after {}s{}", timeout.as_secs(), fmt_stderr_tail(&tail)),
+            }))
+            .await;
+        return;
+    } else {
+        let _ = child.wait().await;
+    }
+
+    if let Some(msg) = had_error {
+        let tail = stderr_buf.lock().await.clone();
+        let _ = tx
+            .send(Err(AgentError::Provider {
+                provider: "codex".into(),
+                message: format!("codex error: {msg}{}", fmt_stderr_tail(&tail)),
+            }))
+            .await;
+        return;
+    }
+
+    let cost = AgentCost {
+        input_tokens,
+        output_tokens,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        total_usd: 0.0,
+    };
+    {
+        let mut c = cost_handle.lock().unwrap();
+        c.input_tokens += cost.input_tokens;
+        c.output_tokens += cost.output_tokens;
+        c.total_usd += cost.total_usd;
+    }
+    if !thread_id_local.is_empty() {
+        let mut g = thread_handle.lock().unwrap();
+        *g = thread_id_local;
+    }
+    if cost.total_usd > budget {
+        let _ = tx.send(Err(AgentError::BudgetExceeded { limit: budget, spent: cost.total_usd })).await;
+        return;
+    }
+    let _ = tx
+        .send(Ok(MessageEvent::ResultDone { cost, content, is_error: false }))
+        .await;
+    saw_terminal = true;
+    let _ = saw_terminal;
 }
 
 #[async_trait]
@@ -612,6 +862,10 @@ impl AgentExecutor for CodexExecutor {
             // Structured output via --output-schema is not yet wired; flip
             // back to true once that lands.
             structured_output: false,
+            streaming: true,
+            hooks: false,
+            prompt_caching: false,
+            extended_thinking: false,
         }
     }
 
