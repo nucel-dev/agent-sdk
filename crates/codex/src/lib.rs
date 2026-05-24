@@ -645,6 +645,10 @@ impl AgentExecutor for CodexExecutor {
             // Structured output via --output-schema is not yet wired; flip
             // back to true once that lands.
             structured_output: false,
+            streaming: false,
+            hooks: false,
+            prompt_caching: false,
+            extended_thinking: false,
         }
     }
 

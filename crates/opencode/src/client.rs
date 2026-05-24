@@ -197,6 +197,8 @@ impl OpencodeClient {
             cost: AgentCost {
                 input_tokens,
                 output_tokens,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
                 total_usd: cost_usd,
             },
             confidence: None,

@@ -415,11 +415,7 @@ impl ClaudeProcess {
 
         Ok(super::AgentResponse {
             content,
-            cost: AgentCost {
-                input_tokens,
-                output_tokens,
-                total_usd: total_cost_usd,
-            },
+            cost: AgentCost { input_tokens, output_tokens, cache_read_tokens: 0, cache_creation_tokens: 0, total_usd: total_cost_usd },
             confidence: None,
             requests_escalation: false,
             tool_calls: vec![],

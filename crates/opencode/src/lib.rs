@@ -268,6 +268,10 @@ impl AgentExecutor for OpencodeExecutor {
             mcp_support: true,
             autonomous_mode: true,
             structured_output: false,
+            streaming: false,
+            hooks: false,
+            prompt_caching: false,
+            extended_thinking: false,
         }
     }
 

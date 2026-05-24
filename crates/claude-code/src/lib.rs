@@ -248,6 +248,10 @@ impl AgentExecutor for ClaudeCodeExecutor {
             mcp_support: true,
             autonomous_mode: true,
             structured_output: false,
+            streaming: true,
+            hooks: true,
+            prompt_caching: true,
+            extended_thinking: true,
         }
     }
 
