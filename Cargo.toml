@@ -4,6 +4,7 @@ members = [
     "crates/claude-code",
     "crates/codex",
     "crates/opencode",
+    "crates/bedrock",
     "crates/unified",
 ]
 resolver = "2"
