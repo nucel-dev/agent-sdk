@@ -31,3 +31,20 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 wiremock = "0.6"
 tempfile = "3"
 tokio-test = "0.4"
+
+# ─── Build profiles ─────────────────────────────────────────────────────────
+# Cuts target/ size substantially: split-debuginfo packs DWARF into one
+# .dwp file (macOS default `unpacked` is ~3x larger); strip + thin LTO
+# keep release binaries small. Profile settings only affect builds OF this
+# workspace, not downstream consumers of the published crates.
+
+[profile.dev]
+split-debuginfo = "packed"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 16
+
+[profile.test]
+split-debuginfo = "packed"
