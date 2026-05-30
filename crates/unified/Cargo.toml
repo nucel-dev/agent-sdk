@@ -80,3 +80,12 @@ path = "examples/budget_control.rs"
 [[example]]
 name = "resume_session"
 path = "examples/resume_session.rs"
+
+[[example]]
+name = "retry_policy"
+path = "examples/retry_policy.rs"
+
+[[example]]
+name = "vertex_with_retry"
+path = "examples/vertex_with_retry.rs"
+required-features = ["vertex"]

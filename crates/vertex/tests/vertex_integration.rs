@@ -6,11 +6,14 @@
 
 use std::path::Path;
 
+use futures::StreamExt;
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use nucel_agent_core::{AgentError, AgentExecutor, ExecutorType, SpawnConfig};
+use nucel_agent_core::{
+    AgentError, AgentExecutor, ExecutorType, MessageEvent, RetryPolicy, SpawnConfig,
+};
 use nucel_agent_vertex::VertexExecutor;
 
 fn ok_body(text: &str, input: u64, output: u64) -> serde_json::Value {
@@ -111,8 +114,10 @@ async fn rate_limit_maps_to_rate_limited_error() {
         .mount(&server)
         .await;
 
-    let executor =
-        VertexExecutor::with_static_token("p", "us-east5", "tok").with_api_root(server.uri());
+    // Disable retries so the test asserts mapping, not backoff timing.
+    let executor = VertexExecutor::with_static_token("p", "us-east5", "tok")
+        .with_api_root(server.uri())
+        .with_retry_policy(RetryPolicy::none());
     let cfg = SpawnConfig {
         model: Some("claude-sonnet-4@20251015".into()),
         budget_usd: Some(5.0),
@@ -211,4 +216,169 @@ async fn budget_short_circuits_next_turn() {
 
     let err = session.query("again").await.unwrap_err();
     assert!(matches!(err, AgentError::BudgetExceeded { .. }));
+}
+
+#[tokio::test]
+async fn transient_503_then_success_is_retried() {
+    let server = MockServer::start().await;
+    let url_path =
+        "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
+
+    // First call → 503 (transient). Second call → 200.
+    Mock::given(method("POST"))
+        .and(path(url_path))
+        .respond_with(ResponseTemplate::new(503).set_body_string("scaling up"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(url_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("recovered", 5, 3)))
+        .mount(&server)
+        .await;
+
+    // Fast backoff so the test stays snappy.
+    let policy = RetryPolicy {
+        max_retries: 2,
+        base_backoff: std::time::Duration::from_millis(1),
+        max_backoff: std::time::Duration::from_millis(5),
+    };
+    let executor = VertexExecutor::with_static_token("p", "us-east5", "tok")
+        .with_api_root(server.uri())
+        .with_retry_policy(policy);
+    let cfg = SpawnConfig {
+        model: Some("claude-sonnet-4@20251015".into()),
+        budget_usd: Some(5.0),
+        ..Default::default()
+    };
+
+    let session = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .expect("spawn should succeed after retry");
+    let cost = session.total_cost().await.unwrap();
+    // Cost recorded exactly once — the retried (failed) attempt added nothing.
+    assert_eq!(cost.input_tokens, 5);
+    assert_eq!(cost.output_tokens, 3);
+}
+
+#[tokio::test]
+async fn retry_budget_exhaustion_surfaces_last_error() {
+    let server = MockServer::start().await;
+    // Always 429 — should exhaust the retry budget and surface RateLimited.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("still throttled"))
+        .mount(&server)
+        .await;
+
+    let policy = RetryPolicy {
+        max_retries: 2,
+        base_backoff: std::time::Duration::from_millis(1),
+        max_backoff: std::time::Duration::from_millis(5),
+    };
+    let executor = VertexExecutor::with_static_token("p", "us-east5", "tok")
+        .with_api_root(server.uri())
+        .with_retry_policy(policy);
+    let cfg = SpawnConfig {
+        model: Some("claude-sonnet-4@20251015".into()),
+        budget_usd: Some(5.0),
+        ..Default::default()
+    };
+
+    let err = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AgentError::RateLimited { .. }));
+}
+
+#[tokio::test]
+async fn fatal_4xx_is_not_retried() {
+    let server = MockServer::start().await;
+    // A 400 must be returned immediately and only once — never retried.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let executor = VertexExecutor::with_static_token("p", "us-east5", "tok")
+        .with_api_root(server.uri());
+    let cfg = SpawnConfig {
+        model: Some("claude-sonnet-4@20251015".into()),
+        budget_usd: Some(5.0),
+        ..Default::default()
+    };
+
+    let err = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AgentError::Provider { .. }));
+    // The `.expect(1)` mount assertion verifies no retry happened on drop.
+}
+
+#[tokio::test]
+async fn query_stream_emits_api_retry_on_transient_then_completes() {
+    let server = MockServer::start().await;
+    let url_path =
+        "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
+
+    // Spawn's first turn succeeds so we can obtain a session, then the
+    // streamed turn hits a transient 503 before recovering.
+    Mock::given(method("POST"))
+        .and(path(url_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("hello", 1, 1)))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(url_path))
+        .respond_with(ResponseTemplate::new(503).set_body_string("scaling up"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(url_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body("streamed", 4, 2)))
+        .mount(&server)
+        .await;
+
+    let policy = RetryPolicy {
+        max_retries: 2,
+        base_backoff: std::time::Duration::from_millis(1),
+        max_backoff: std::time::Duration::from_millis(5),
+    };
+    let executor = VertexExecutor::with_static_token("p", "us-east5", "tok")
+        .with_api_root(server.uri())
+        .with_retry_policy(policy);
+    let cfg = SpawnConfig {
+        model: Some("claude-sonnet-4@20251015".into()),
+        budget_usd: Some(5.0),
+        ..Default::default()
+    };
+
+    let session = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .expect("spawn ok");
+
+    let mut stream = session.query_stream("again").await.expect("stream ok");
+    let mut saw_api_retry = false;
+    let mut saw_result_done = false;
+    while let Some(evt) = stream.next().await {
+        match evt.expect("event ok") {
+            MessageEvent::ApiRetry { attempt, .. } => {
+                assert_eq!(attempt, 1);
+                saw_api_retry = true;
+            }
+            MessageEvent::ResultDone { content, .. } => {
+                assert_eq!(content, "streamed");
+                saw_result_done = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_api_retry, "query_stream must surface an ApiRetry event");
+    assert!(saw_result_done, "query_stream must terminate with ResultDone");
 }

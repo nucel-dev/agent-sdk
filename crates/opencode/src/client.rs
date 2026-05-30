@@ -1,11 +1,19 @@
 //! OpenCode HTTP client.
 
-use nucel_agent_core::{AgentCost, AgentError, AgentResponse, Result, SpawnConfig};
+use nucel_agent_core::{
+    AgentCost, AgentError, AgentResponse, MessageEvent, Result, RetryPolicy, SpawnConfig,
+};
 use serde_json::json;
+use tokio::sync::mpsc::Sender;
 
 /// Default username for OpenCode HTTP basic auth when only a password (api_key)
 /// is supplied. Matches upstream defaults.
 const DEFAULT_BASIC_AUTH_USERNAME: &str = "opencode";
+
+/// Optional sink for streaming-side observability events (`ApiRetry`). The
+/// non-streaming `create_session`/`prompt` paths pass `None`; the SSE path
+/// passes the live channel so a retry is observable in `query_stream()`.
+type RetrySink<'a> = Option<&'a Sender<Result<MessageEvent>>>;
 
 /// HTTP client for OpenCode server.
 ///
@@ -18,6 +26,10 @@ pub struct OpencodeClient {
     api_user: Option<String>,
     api_password: Option<String>,
     directory: Option<String>,
+    /// Retry policy for *transient*, pre-side-effect request failures
+    /// (connection errors, timeouts, `429`/`502`/`503`/`504` before any
+    /// response body is consumed). Defaults to [`RetryPolicy::default`].
+    retry: RetryPolicy,
 }
 
 impl OpencodeClient {
@@ -66,7 +78,19 @@ impl OpencodeClient {
             api_user,
             api_password,
             directory: directory.map(String::from),
+            retry: RetryPolicy::default(),
         }
+    }
+
+    /// Override the retry policy for transient, pre-side-effect failures.
+    ///
+    /// Pass [`RetryPolicy::none`] to disable retrying. Retries only ever apply
+    /// to the request-dispatch phase (connection failure, timeout, `429`/`502`/
+    /// `503`/`504` *before* any response body is consumed); once a `2xx` body
+    /// starts being read, errors are always fatal regardless of this policy.
+    pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
     }
 
     /// Apply credentials and the optional `?directory=…` query.
@@ -80,27 +104,141 @@ impl OpencodeClient {
         req
     }
 
+    /// Dispatch a request with bounded, pre-side-effect retry and decode the
+    /// `2xx` JSON body.
+    ///
+    /// `op` is a short label used in error messages / retry logs. `build_req`
+    /// must construct a *fresh* [`reqwest::RequestBuilder`] on every call so
+    /// each attempt re-mints the request and nothing is replayed half-sent.
+    ///
+    /// Classification mirrors the Vertex provider:
+    /// - send/connect/timeout failures → transient (no body consumed),
+    /// - `429`/`502`/`503`/`504` → transient (server rejected before doing
+    ///   work),
+    /// - any other non-2xx → fatal,
+    /// - `2xx` then JSON-decode failure → fatal (we are past the side-effect
+    ///   boundary; never replay).
+    async fn send_with_retry<F>(
+        &self,
+        op: &str,
+        retry_sink: RetrySink<'_>,
+        build_req: F,
+    ) -> Result<serde_json::Value>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        let policy = self.retry;
+        let mut retries_done: u32 = 0;
+        loop {
+            let send_result = build_req().send().await;
+
+            let attempt: Result<serde_json::Value> = match send_result {
+                Err(e) => {
+                    // No response body consumed → classify by reqwest flags.
+                    if e.is_timeout() {
+                        Err(AgentError::Timeout { seconds: 300 })
+                    } else if e.is_connect() || e.is_request() {
+                        Err(AgentError::Io(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionReset,
+                            format!("HTTP error contacting OpenCode ({op}): {e}"),
+                        )))
+                    } else {
+                        Err(AgentError::Provider {
+                            provider: "opencode".into(),
+                            message: format!("HTTP error contacting OpenCode ({op}): {e}"),
+                        })
+                    }
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        let body = response.text().await.unwrap_or_default();
+                        Err(AgentError::RateLimited { message: body })
+                    } else if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                        || status == reqwest::StatusCode::GATEWAY_TIMEOUT
+                        || status == reqwest::StatusCode::BAD_GATEWAY
+                    {
+                        let body = response.text().await.unwrap_or_default();
+                        Err(AgentError::RateLimited {
+                            message: format!("{status}: {body}"),
+                        })
+                    } else if !status.is_success() {
+                        // 4xx (other than 429) / hard 5xx → fatal.
+                        let body = response.text().await.unwrap_or_default();
+                        Err(AgentError::Provider {
+                            provider: "opencode".into(),
+                            message: format!("{op} failed ({status}): {body}"),
+                        })
+                    } else {
+                        // 2xx — PAST the side-effect boundary. A decode failure
+                        // here is fatal: do not replay.
+                        response
+                            .json::<serde_json::Value>()
+                            .await
+                            .map_err(|e| AgentError::Provider {
+                                provider: "opencode".into(),
+                                message: format!("failed to parse {op} response: {e}"),
+                            })
+                    }
+                }
+            };
+
+            match attempt {
+                Ok(body) => return Ok(body),
+                Err(err) => {
+                    if policy.should_retry(&err, retries_done) {
+                        let backoff = policy.backoff_for(retries_done);
+                        let attempt_no = retries_done + 1;
+                        tracing::warn!(
+                            op = op,
+                            attempt = attempt_no,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "opencode transient failure; retrying"
+                        );
+                        // Make the retry observable on the stream, if any.
+                        if let Some(tx) = retry_sink {
+                            let _ = tx
+                                .send(Ok(MessageEvent::ApiRetry {
+                                    attempt: attempt_no,
+                                    message: format!("transient {op} failure: {err}"),
+                                }))
+                                .await;
+                        }
+                        tokio::time::sleep(backoff).await;
+                        retries_done += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        }
+    }
+
     /// Create a new session on the OpenCode server.
     pub async fn create_session(&self) -> Result<serde_json::Value> {
+        self.create_session_inner(None).await
+    }
+
+    /// Create a session, forwarding `ApiRetry` events to a streaming sink when
+    /// a transient pre-side-effect failure is retried.
+    pub(crate) async fn create_session_inner(
+        &self,
+        retry_sink: RetrySink<'_>,
+    ) -> Result<serde_json::Value> {
         let url = format!("{}/session", self.base_url);
-        let req = self.apply_common(self.http.post(&url)).json(&json!({}));
 
-        let resp = req.send().await.map_err(|e| AgentError::Provider {
-            provider: "opencode".into(),
-            message: format!("failed to create session: {e}"),
-        })?;
-
-        if !resp.status().is_success() {
-            return Err(AgentError::Provider {
-                provider: "opencode".into(),
-                message: format!("session creation failed: {}", resp.status()),
-            });
-        }
-
-        resp.json().await.map_err(|e| AgentError::Provider {
-            provider: "opencode".into(),
-            message: format!("failed to parse session response: {e}"),
+        // ── Dispatch with bounded retry ──────────────────────────────────
+        //
+        // SIDE-EFFECT RULE: only the pre-side-effect window is retried —
+        // connection establishment and an outright server rejection
+        // (`429`/`502`/`503`/`504`) where *no response body has been consumed*.
+        // The instant we begin reading a `2xx` body, errors are fatal and
+        // never retried. Session creation is idempotent enough to replay only
+        // while it has demonstrably not been accepted.
+        self.send_with_retry("create session", retry_sink, || {
+            self.apply_common(self.http.post(&url)).json(&json!({}))
         })
+        .await
     }
 
     /// Send a prompt to a session.
@@ -110,6 +248,20 @@ impl OpencodeClient {
         prompt: &str,
         config: &SpawnConfig,
         budget: f64,
+    ) -> Result<AgentResponse> {
+        self.prompt_inner(session_id, prompt, config, budget, None)
+            .await
+    }
+
+    /// Prompt a session, forwarding `ApiRetry` events to a streaming sink when
+    /// a transient pre-side-effect failure is retried.
+    pub(crate) async fn prompt_inner(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        config: &SpawnConfig,
+        budget: f64,
+        retry_sink: RetrySink<'_>,
     ) -> Result<AgentResponse> {
         let mut body = json!({
             "parts": [
@@ -131,27 +283,22 @@ impl OpencodeClient {
         }
 
         let url = format!("{}/session/{}/prompt", self.base_url, session_id);
-        let req = self.apply_common(self.http.post(&url)).json(&body);
 
-        let resp = req.send().await.map_err(|e| AgentError::Provider {
-            provider: "opencode".into(),
-            message: format!("prompt request failed: {e}"),
-        })?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(AgentError::Provider {
-                provider: "opencode".into(),
-                message: format!("prompt failed ({status}): {body_text}"),
-            });
-        }
-
-        let data: serde_json::Value =
-            resp.json().await.map_err(|e| AgentError::Provider {
-                provider: "opencode".into(),
-                message: format!("failed to parse prompt response: {e}"),
-            })?;
+        // ── Dispatch with bounded retry ──────────────────────────────────
+        //
+        // SIDE-EFFECT RULE: we retry ONLY the pre-side-effect window — request
+        // dispatch and an outright server rejection (`429`/`502`/`503`/`504`)
+        // where *no response body has been consumed* and the model therefore
+        // did no work. The instant we begin reading a `2xx` body (tokens
+        // generated, cost incurred), errors are fatal and never retried. A
+        // retry rebuilds the request from `body` each attempt so nothing is
+        // duplicated. The user-turn transcript push lives in the caller,
+        // OUTSIDE this loop.
+        let data: serde_json::Value = self
+            .send_with_retry("prompt", retry_sink, || {
+                self.apply_common(self.http.post(&url)).json(&body)
+            })
+            .await?;
 
         // Extract response text from parts.
         let mut content = String::new();
@@ -221,7 +368,6 @@ impl OpencodeClient {
         -> Result<nucel_agent_core::EventStream>
     {
         use futures::StreamExt;
-        use nucel_agent_core::{AgentError, MessageEvent, AgentCost};
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<MessageEvent>>(64);
         let http = self.http.clone();
@@ -260,13 +406,24 @@ impl OpencodeClient {
             }
 
             // Fire the prompt request in the background; the response carries
-            // the final cost/tokens which we use to emit ResultDone.
+            // the final cost/tokens which we use to emit ResultDone. A retry
+            // sink is threaded in so transient retries surface as `ApiRetry`
+            // events on this same stream.
             let prompt_tx = tx.clone();
+            let retry_tx = tx.clone();
             let session_for_prompt = session_id.clone();
             let prompt_owned = prompt.clone();
             let config_for_prompt = config.clone();
             let prompt_handle = tokio::spawn(async move {
-                client_clone.prompt(&session_for_prompt, &prompt_owned, &config_for_prompt, budget).await
+                client_clone
+                    .prompt_inner(
+                        &session_for_prompt,
+                        &prompt_owned,
+                        &config_for_prompt,
+                        budget,
+                        Some(&retry_tx),
+                    )
+                    .await
             });
 
             // Parse SSE event-stream from the response body.

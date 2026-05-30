@@ -49,8 +49,10 @@ use serde::{Deserialize, Serialize};
 
 use nucel_agent_core::{
     AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
-    AvailabilityStatus, ExecutorType, Result, SessionImpl, SpawnConfig,
+    AvailabilityStatus, EventStream, ExecutorType, MessageEvent, Result, RetryPolicy, SessionImpl,
+    SpawnConfig,
 };
+use tokio::sync::mpsc::Sender;
 
 pub use auth::{AdcToken, StaticToken, TokenProvider};
 pub use pricing::{lookup as lookup_price, ModelPrice};
@@ -72,6 +74,10 @@ pub struct VertexExecutor {
     /// `https://<region>-aiplatform.googleapis.com`. Tests point this at
     /// a `wiremock::MockServer`.
     api_root: Option<String>,
+    /// Retry policy for *transient*, pre-side-effect failures (connection
+    /// errors, `429`, `503` before any response body is read). Defaults to
+    /// [`RetryPolicy::default`].
+    retry: RetryPolicy,
 }
 
 impl VertexExecutor {
@@ -91,6 +97,7 @@ impl VertexExecutor {
                 .build()
                 .expect("reqwest client builds"),
             api_root: None,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -120,6 +127,17 @@ impl VertexExecutor {
     /// callers should leave this unset so the regional endpoint is used.
     pub fn with_api_root(mut self, root: impl Into<String>) -> Self {
         self.api_root = Some(root.into().trim_end_matches('/').to_string());
+        self
+    }
+
+    /// Override the retry policy for transient, pre-side-effect failures.
+    ///
+    /// Pass [`RetryPolicy::none`] to disable retrying entirely. Retries only
+    /// ever apply to the request-dispatch phase (connection failure, `429`,
+    /// `503` *before* any response body is consumed); once a `2xx` body starts
+    /// streaming, errors are always fatal regardless of this policy.
+    pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
         self
     }
 
@@ -187,6 +205,7 @@ struct UsageInfo {
 
 // ── Session ────────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 struct VertexSessionImpl {
     executor: Arc<VertexExecutorInner>,
     model: String,
@@ -204,6 +223,7 @@ struct VertexExecutorInner {
     auth: Arc<dyn TokenProvider>,
     http: reqwest::Client,
     api_root: Option<String>,
+    retry: RetryPolicy,
 }
 
 impl VertexExecutorInner {
@@ -223,6 +243,16 @@ impl VertexExecutorInner {
 
 impl VertexSessionImpl {
     async fn run_turn(&self, prompt: &str) -> Result<AgentResponse> {
+        self.run_turn_inner(prompt, None).await
+    }
+
+    /// Run a single turn, optionally forwarding `ApiRetry` events to a
+    /// streaming sink when a transient pre-side-effect failure is retried.
+    async fn run_turn_inner(
+        &self,
+        prompt: &str,
+        retry_sink: Option<&Sender<Result<MessageEvent>>>,
+    ) -> Result<AgentResponse> {
         // Budget gate.
         {
             let c = self.cost.lock().unwrap();
@@ -251,40 +281,116 @@ impl VertexSessionImpl {
             system: self.system_prompt.clone(),
         };
 
-        let token = self.executor.auth.token().await?;
         let url = self.executor.endpoint_for(&self.model);
 
-        let response = self
-            .executor
-            .http
-            .post(&url)
-            .bearer_auth(token)
-            .json(&req_body)
-            .send()
-            .await
-            .map_err(|e| AgentError::Provider {
-                provider: "vertex".into(),
-                message: format!("HTTP error contacting Vertex: {e}"),
-            })?;
+        // ── Dispatch with bounded retry ──────────────────────────────────
+        //
+        // SIDE-EFFECT RULE: we retry ONLY the pre-side-effect window — token
+        // mint, connection establishment, and an outright server rejection
+        // (`429`/`503`) where *no response body has been consumed* and the
+        // model therefore did no work. The instant we begin reading a `2xx`
+        // body (where tokens have been generated and cost incurred), errors
+        // are fatal and never retried. This guarantees a retry can never
+        // double-charge or duplicate a completed turn.
+        let policy = self.executor.retry;
+        let mut retries_done: u32 = 0;
+        let parsed: RawPredictResponse = loop {
+            // Mint a fresh token each attempt — a transient auth blip on one
+            // try shouldn't poison the retry.
+            let token = self.executor.auth.token().await?;
 
-        let status = response.status();
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let body = response.text().await.unwrap_or_default();
-            return Err(AgentError::RateLimited { message: body });
-        }
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(AgentError::Provider {
-                provider: "vertex".into(),
-                message: format!("Vertex returned {status}: {body}"),
-            });
-        }
+            let send_result = self
+                .executor
+                .http
+                .post(&url)
+                .bearer_auth(token)
+                .json(&req_body)
+                .send()
+                .await;
 
-        let parsed: RawPredictResponse =
-            response.json().await.map_err(|e| AgentError::Provider {
-                provider: "vertex".into(),
-                message: format!("invalid JSON from Vertex: {e}"),
-            })?;
+            // Classify the dispatch outcome into Ok(body) | retryable | fatal.
+            let attempt: Result<RawPredictResponse> = match send_result {
+                Err(e) => {
+                    // Connection/timeout failures: classify by reqwest flags.
+                    if e.is_timeout() {
+                        Err(AgentError::Timeout { seconds: 300 })
+                    } else if e.is_connect() || e.is_request() {
+                        // No bytes of a response body were consumed → safe to
+                        // retry. Map to a transient Io error.
+                        Err(AgentError::Io(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionReset,
+                            format!("HTTP error contacting Vertex: {e}"),
+                        )))
+                    } else {
+                        Err(AgentError::Provider {
+                            provider: "vertex".into(),
+                            message: format!("HTTP error contacting Vertex: {e}"),
+                        })
+                    }
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        // Body not consumed for the model's sake — retryable.
+                        let body = response.text().await.unwrap_or_default();
+                        Err(AgentError::RateLimited { message: body })
+                    } else if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                        || status == reqwest::StatusCode::GATEWAY_TIMEOUT
+                        || status == reqwest::StatusCode::BAD_GATEWAY
+                    {
+                        // Upstream not ready / overloaded; no work done.
+                        let body = response.text().await.unwrap_or_default();
+                        Err(AgentError::RateLimited {
+                            message: format!("{status}: {body}"),
+                        })
+                    } else if !status.is_success() {
+                        // 4xx (other than 429) / hard 5xx → fatal.
+                        let body = response.text().await.unwrap_or_default();
+                        Err(AgentError::Provider {
+                            provider: "vertex".into(),
+                            message: format!("Vertex returned {status}: {body}"),
+                        })
+                    } else {
+                        // 2xx — we are now PAST the side-effect boundary.
+                        // A decode failure here is fatal: do not replay.
+                        response.json::<RawPredictResponse>().await.map_err(|e| {
+                            AgentError::Provider {
+                                provider: "vertex".into(),
+                                message: format!("invalid JSON from Vertex: {e}"),
+                            }
+                        })
+                    }
+                }
+            };
+
+            match attempt {
+                Ok(body) => break body,
+                Err(err) => {
+                    if policy.should_retry(&err, retries_done) {
+                        let backoff = policy.backoff_for(retries_done);
+                        let attempt_no = retries_done + 1;
+                        tracing::warn!(
+                            attempt = attempt_no,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "vertex transient failure; retrying"
+                        );
+                        // Make the retry observable on the stream, if any.
+                        if let Some(tx) = retry_sink {
+                            let _ = tx
+                                .send(Ok(MessageEvent::ApiRetry {
+                                    attempt: attempt_no,
+                                    message: format!("transient vertex failure: {err}"),
+                                }))
+                                .await;
+                        }
+                        tokio::time::sleep(backoff).await;
+                        retries_done += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            }
+        };
 
         // Collect assistant text.
         let mut text = String::new();
@@ -339,6 +445,55 @@ impl SessionImpl for VertexSessionImpl {
         self.run_turn(prompt).await
     }
 
+    /// Streaming variant.
+    ///
+    /// Vertex's `rawPredict` is a single non-streaming request, so this isn't a
+    /// token-level stream — but it surfaces [`MessageEvent::ApiRetry`] events
+    /// live while the (retried) request is in flight, then terminates with a
+    /// single `TextChunk` + `ResultDone`. This makes transient retries
+    /// observable in `query_stream()` exactly as the umbrella API promises.
+    async fn query_stream(&self, prompt: &str) -> Result<EventStream> {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<MessageEvent>>(16);
+        // Every field is an `Arc`/`Copy`/`String`, so a clone is cheap and
+        // shares the same transcript + cost state. We move it onto a task so
+        // retries can stream out on `tx` while the request is in flight.
+        let this = self.clone();
+        let prompt = prompt.to_string();
+
+        tokio::spawn(async move {
+            match this.run_turn_inner(&prompt, Some(&tx)).await {
+                Ok(resp) => {
+                    let _ = tx
+                        .send(Ok(MessageEvent::TextChunk {
+                            text: resp.content.clone(),
+                        }))
+                        .await;
+                    let _ = tx
+                        .send(Ok(MessageEvent::ResultDone {
+                            cost: resp.cost,
+                            content: resp.content,
+                            is_error: false,
+                        }))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = tx
+                        .send(Ok(MessageEvent::Error {
+                            message: e.to_string(),
+                        }))
+                        .await;
+                }
+            }
+        });
+
+        // Adapt the mpsc receiver into a `Stream` without pulling in
+        // `tokio-stream` as a dependency.
+        let stream = futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|item| (item, rx))
+        });
+        Ok(Box::pin(stream))
+    }
+
     async fn total_cost(&self) -> Result<AgentCost> {
         Ok(self.cost.lock().unwrap().clone())
     }
@@ -381,6 +536,7 @@ impl AgentExecutor for VertexExecutor {
             auth: Arc::clone(&self.auth),
             http: self.http.clone(),
             api_root: self.api_root.clone(),
+            retry: self.retry,
         });
 
         let inner = Arc::new(VertexSessionImpl {
@@ -433,7 +589,9 @@ impl AgentExecutor for VertexExecutor {
             mcp_support: false,
             autonomous_mode: false,
             structured_output: false,
-            streaming: false,
+            // `query_stream()` is implemented: it surfaces `ApiRetry` events
+            // live and terminates with `TextChunk` + `ResultDone`.
+            streaming: true,
             hooks: false,
             // Vertex passes through Anthropic's cache_read/creation tokens
             // when present in upstream responses.
@@ -503,7 +661,8 @@ mod tests {
         assert!(caps.token_usage);
         assert!(caps.prompt_caching);
         assert!(!caps.session_resume);
-        assert!(!caps.streaming);
+        // Streaming is now implemented (surfaces ApiRetry + ResultDone).
+        assert!(caps.streaming);
     }
 
     #[test]

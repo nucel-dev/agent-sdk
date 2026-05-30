@@ -1,10 +1,19 @@
 //! Wiremock integration tests for OpenCode HTTP client.
 
 use nucel_agent_opencode::OpencodeExecutor;
-use nucel_agent_core::{AgentExecutor, ExecutorType, SpawnConfig};
+use nucel_agent_core::{AgentError, AgentExecutor, ExecutorType, RetryPolicy, SpawnConfig};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use serde_json::json;
+
+/// Fast, deterministic retry policy so retry tests stay snappy.
+fn fast_retry() -> RetryPolicy {
+    RetryPolicy {
+        max_retries: 2,
+        base_backoff: std::time::Duration::from_millis(1),
+        max_backoff: std::time::Duration::from_millis(5),
+    }
+}
 
 // ── Executor basics ────────────────────────────────────────────────────────
 
@@ -743,4 +752,234 @@ fn opencode_capabilities_advertise_streaming() {
     let caps = nucel_agent_opencode::OpencodeExecutor::new().capabilities();
     assert!(caps.streaming, "OpenCode should advertise SSE streaming");
     assert!(!caps.hooks);
+}
+
+// ── Retry: pre-side-effect transient handling ───────────────────────────────
+
+#[tokio::test]
+async fn opencode_transient_503_on_prompt_then_success_is_retried() {
+    let server = MockServer::start().await;
+
+    // Session creation succeeds.
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-retry"})))
+        .mount(&server)
+        .await;
+
+    // First prompt → 503 (transient, no body consumed). Then → 200.
+    Mock::given(method("POST"))
+        .and(path("/session/sess-retry/prompt"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("scaling up"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/session/sess-retry/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "recovered"}],
+            "cost": 0.004,
+            "info": { "tokens": { "input": 5, "output": 3 } }
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri()).with_retry_policy(fast_retry());
+    let session = exec
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "hi",
+            &SpawnConfig {
+                budget_usd: Some(5.0),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn should succeed after retry");
+
+    // Cost recorded exactly once — the failed 503 attempt added nothing.
+    let cost = session.total_cost().await.unwrap();
+    assert_eq!(cost.input_tokens, 5);
+    assert_eq!(cost.output_tokens, 3);
+    assert!((cost.total_usd - 0.004).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn opencode_transient_503_on_session_create_then_success_is_retried() {
+    let server = MockServer::start().await;
+
+    // First session create → 503, then succeeds.
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("warming up"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-late"})))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/session/sess-late/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "ok"}],
+            "cost": 0.0
+        })))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri()).with_retry_policy(fast_retry());
+    let session = exec
+        .spawn(std::path::Path::new("/tmp"), "hi", &SpawnConfig::default())
+        .await
+        .expect("session creation should succeed after retry");
+    assert_eq!(session.session_id, "sess-late");
+}
+
+#[tokio::test]
+async fn opencode_retry_budget_exhaustion_surfaces_rate_limited() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-429"})))
+        .mount(&server)
+        .await;
+
+    // Prompt always 429 → exhaust budget → surface RateLimited.
+    Mock::given(method("POST"))
+        .and(path("/session/sess-429/prompt"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("still throttled"))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri()).with_retry_policy(fast_retry());
+    let err = exec
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "hi",
+            &SpawnConfig {
+                budget_usd: Some(5.0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AgentError::RateLimited { .. }),
+        "expected RateLimited after exhausting retries, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn opencode_fatal_4xx_on_prompt_is_not_retried() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-400"})))
+        .mount(&server)
+        .await;
+
+    // A 400 must be returned immediately and only once — never retried.
+    Mock::given(method("POST"))
+        .and(path("/session/sess-400/prompt"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri()).with_retry_policy(fast_retry());
+    let err = exec
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "hi",
+            &SpawnConfig {
+                budget_usd: Some(5.0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AgentError::Provider { .. }));
+    // The `.expect(1)` mount assertion verifies no retry happened on drop.
+}
+
+#[tokio::test]
+async fn opencode_retry_disabled_does_not_retry_503() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-none"})))
+        .mount(&server)
+        .await;
+
+    // With RetryPolicy::none, a single 503 must surface immediately (once).
+    Mock::given(method("POST"))
+        .and(path("/session/sess-none/prompt"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let exec =
+        OpencodeExecutor::with_base_url(server.uri()).with_retry_policy(RetryPolicy::none());
+    let err = exec
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "hi",
+            &SpawnConfig {
+                budget_usd: Some(5.0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AgentError::RateLimited { .. }));
+}
+
+#[tokio::test]
+async fn opencode_spawnconfig_retry_policy_overrides_executor_default() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-cfg"})))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/session/sess-cfg/prompt"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("nope"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/session/sess-cfg/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "ok"}],
+            "cost": 0.0
+        })))
+        .mount(&server)
+        .await;
+
+    // Executor default would also retry, but assert the SpawnConfig knob is
+    // honored: set it explicitly and confirm the 503 is retried to success.
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let session = exec
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "hi",
+            &SpawnConfig {
+                budget_usd: Some(5.0),
+                retry_policy: fast_retry(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("SpawnConfig.retry_policy should drive the retry");
+    assert_eq!(session.session_id, "sess-cfg");
 }

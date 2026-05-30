@@ -3,6 +3,7 @@ use std::path::Path;
 use async_trait::async_trait;
 
 use crate::error::Result;
+use crate::retry::RetryPolicy;
 use crate::session::AgentSession;
 use crate::types::{CachePoint, ExecutorType, HookConfig, PermissionMode};
 
@@ -48,7 +49,10 @@ impl Default for AgentCapabilities {
 /// Runtime availability of the provider.
 #[derive(Debug, Clone)]
 pub struct AvailabilityStatus {
+    /// Whether the provider's runtime dependency is usable right now.
     pub available: bool,
+    /// Human-readable explanation. Always `Some` when `available` is `false`;
+    /// may also carry an informational note when `available` is `true`.
     pub reason: Option<String>,
 }
 
@@ -78,6 +82,16 @@ pub struct SpawnConfig {
     /// Extended-thinking budget in tokens (Claude Code's
     /// `--thinking-budget-tokens`). Ignored by other providers.
     pub thinking_budget: Option<u32>,
+    /// Retry policy for *transient*, pre-side-effect request failures
+    /// (connection errors, timeouts, `429`/`502`/`503`/`504` before any
+    /// response body is consumed). Honored by the network providers (Vertex,
+    /// OpenCode); ignored by subprocess providers that delegate retry to their
+    /// CLI. Additive: defaults to [`RetryPolicy::default`], so existing
+    /// `..Default::default()` construction is unaffected.
+    ///
+    /// (Equivalent to `#[serde(default)]` were these structs ever
+    /// Serde-derived — `RetryPolicy: Default` makes the field optional.)
+    pub retry_policy: RetryPolicy,
 }
 
 /// Configuration for the executor itself (not per-session).
@@ -89,6 +103,11 @@ pub struct ExecutorConfig {
     pub base_url: Option<String>,
     /// Working directory for CLI discovery.
     pub working_dir: Option<String>,
+    /// Retry policy for *transient*, pre-side-effect request failures applied
+    /// uniformly by the network providers. Additive: defaults to
+    /// [`RetryPolicy::default`], so existing `..Default::default()`
+    /// construction is unaffected.
+    pub retry_policy: RetryPolicy,
 }
 
 /// Core trait — every provider implements this.

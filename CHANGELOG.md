@@ -21,6 +21,47 @@ Crate versions covered in this file:
 
 ## [Unreleased]
 
+### Added — transient-retry policy (robustness)
+
+- `nucel-agent-core::retry` module: `RetryPolicy` (max retries + exponential,
+  capped backoff) and the `is_transient(&AgentError)` classifier. Both are
+  re-exported from the umbrella crate (`RetryPolicy`, `is_transient`, and the
+  `retry` module). Purely additive — no existing item changed.
+- **Side-effect-safe by design.** Only failures in the *request-dispatch*
+  window are retried: connection errors, timeouts, and `429`/`502`/`503`/`504`
+  *before any response body is consumed*. The moment a `2xx` body starts
+  streaming (tokens generated, cost incurred), errors are fatal and never
+  replayed — so a retry can never double-charge or duplicate a completed turn.
+  A generic `Provider` error is always treated as fatal for the same reason.
+- `nucel-agent-vertex`: wired the policy into `VertexExecutor` (default 3
+  retries / 250 ms base / 8 s cap). New builder `with_retry_policy(...)`;
+  pass `RetryPolicy::none()` to opt out. `query_stream()` is now implemented
+  (`capabilities().streaming == true`): it surfaces `MessageEvent::ApiRetry`
+  events live while a transient request is retried, then terminates with
+  `TextChunk` + `ResultDone`.
+- `nucel-agent-opencode`: wired the policy through `OpencodeExecutor` /
+  `OpencodeClient`. New builder `OpencodeExecutor::with_retry_policy(...)` and
+  `OpencodeClient::with_retry(...)`. Both `create_session` and `prompt` retry
+  the pre-side-effect window only (connect/timeout/`429`/`502`/`503`/`504`
+  before any body is consumed); the request is rebuilt each attempt and the
+  user-turn transcript push stays outside the loop, so nothing is duplicated.
+  Retries fired during `query_stream()` are surfaced as `MessageEvent::ApiRetry`
+  on the SSE stream.
+- `nucel-agent-core`: `SpawnConfig` and `ExecutorConfig` gained an additive
+  `retry_policy: RetryPolicy` field (defaults to `RetryPolicy::default()`, so
+  existing `..Default::default()` construction is unchanged). For OpenCode a
+  non-default `SpawnConfig.retry_policy` overrides the executor-level policy.
+- New examples: `retry_policy` (provider-agnostic, no creds) and
+  `vertex_with_retry` (feature `vertex`).
+- Docs: `AvailabilityStatus` public fields documented (`#![deny(missing_docs)]`
+  readiness).
+
+> AWS Bedrock already retries transient errors inside `aws-sdk-bedrockruntime`.
+> The subprocess providers (Claude Code, Codex) deliberately stay fatal: they
+> delegate retry to their CLI, and replaying a spawn is high-side-effect-risk.
+
+### Added — Bedrock + Vertex providers
+
 Closes audit gap **G47** — first-party providers for Claude on AWS Bedrock
 and GCP Vertex AI. Both ship as separate crates so consumers that don't
 need cloud bindings pay zero dependency cost. Wired into the umbrella

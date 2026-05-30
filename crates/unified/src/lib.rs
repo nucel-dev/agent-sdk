@@ -73,10 +73,15 @@
 
 // Re-export core types.
 pub use nucel_agent_core::{
-    AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
-    AvailabilityStatus, CachePoint, EventStream, ExecutorType, HookConfig, HookHandler,
-    MessageEvent, PermissionMode, Result, SessionImpl, SessionMetadata, SpawnConfig,
+    is_transient, AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse,
+    AgentSession, AvailabilityStatus, CachePoint, EventStream, ExecutorType, HookConfig,
+    HookHandler, MessageEvent, PermissionMode, Result, RetryPolicy, SessionImpl, SessionMetadata,
+    SpawnConfig,
 };
+
+/// Re-export of the retry policy module for callers that want the
+/// [`is_transient`] classifier and [`RetryPolicy`] helpers under a namespace.
+pub use nucel_agent_core::retry;
 
 // Re-export provider executors.
 pub use nucel_agent_claude_code::ClaudeCodeExecutor;

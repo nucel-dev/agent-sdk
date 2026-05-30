@@ -53,7 +53,7 @@ use async_trait::async_trait;
 
 use nucel_agent_core::{
     AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
-    AvailabilityStatus, EventStream, ExecutorType, Result, SessionImpl, SpawnConfig,
+    AvailabilityStatus, EventStream, ExecutorType, Result, RetryPolicy, SessionImpl, SpawnConfig,
 };
 
 use client::OpencodeClient;
@@ -62,6 +62,10 @@ use client::OpencodeClient;
 pub struct OpencodeExecutor {
     base_url: String,
     api_key: Option<String>,
+    /// Retry policy for *transient*, pre-side-effect request failures, applied
+    /// to every client this executor builds. Defaults to
+    /// [`RetryPolicy::default`].
+    retry: RetryPolicy,
 }
 
 impl OpencodeExecutor {
@@ -69,6 +73,7 @@ impl OpencodeExecutor {
         Self {
             base_url: "http://127.0.0.1:4096".to_string(),
             api_key: None,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -76,6 +81,7 @@ impl OpencodeExecutor {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: None,
+            retry: RetryPolicy::default(),
         }
     }
 
@@ -84,16 +90,40 @@ impl OpencodeExecutor {
         self
     }
 
+    /// Override the retry policy for transient, pre-side-effect failures.
+    ///
+    /// Pass [`RetryPolicy::none`] to disable retrying. Retries only ever apply
+    /// to the request-dispatch phase (connection failure, timeout, `429`/`502`/
+    /// `503`/`504` *before* any response body is consumed); once a `2xx` body
+    /// starts being read, errors are always fatal regardless of this policy.
+    pub fn with_retry_policy(mut self, retry: RetryPolicy) -> Self {
+        self.retry = retry;
+        self
+    }
+
     /// Build a client scoped to a given working dir. The underlying
     /// `reqwest::Client` will pool HTTP keep-alive connections per executor
     /// invocation (`spawn`, `resume`, and within a session's `query` loop —
     /// see `OpenCodeSessionImpl::client`).
-    fn make_client(&self, working_dir: &Path) -> OpencodeClient {
+    fn make_client(&self, working_dir: &Path, retry: RetryPolicy) -> OpencodeClient {
         OpencodeClient::new(
             &self.base_url,
             self.api_key.as_deref(),
             working_dir.to_str(),
         )
+        .with_retry(retry)
+    }
+
+    /// Resolve the effective retry policy for a spawn/resume: a non-default
+    /// [`SpawnConfig::retry_policy`] wins, otherwise the executor-level policy
+    /// applies. This keeps both the builder (`with_retry_policy`) and the
+    /// per-call config knobs working without an extra "unset" sentinel.
+    fn effective_retry(&self, config: &SpawnConfig) -> RetryPolicy {
+        if config.retry_policy == RetryPolicy::default() {
+            self.retry
+        } else {
+            config.retry_policy
+        }
     }
 }
 
@@ -193,7 +223,7 @@ impl AgentExecutor for OpencodeExecutor {
             });
         }
 
-        let client = self.make_client(working_dir);
+        let client = self.make_client(working_dir, self.effective_retry(config));
 
         // Create session on server.
         let session_data = client.create_session().await?;
@@ -252,7 +282,7 @@ impl AgentExecutor for OpencodeExecutor {
             });
         }
 
-        let client = self.make_client(working_dir);
+        let client = self.make_client(working_dir, self.effective_retry(config));
 
         let response = client
             .prompt(session_id, prompt, config, budget)

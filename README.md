@@ -191,6 +191,8 @@ pub struct SpawnConfig {
     pub system_prompt: Option<String>,
     pub reasoning: Option<String>,         // provider-specific reasoning effort
     pub max_turns: Option<u32>,            // autonomous turns before returning (added in 0.1.3)
+    pub retry_policy: RetryPolicy,         // transient pre-side-effect retry (network providers)
+    // ... (hook_config, cache_breakpoints, thinking_budget — Claude Code only)
 }
 ```
 
@@ -204,6 +206,54 @@ pub struct SpawnConfig {
 | `RejectAll` | Reject all operations (dry run / plan mode). |
 
 Each provider maps these to its own native flag — see [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Reliability: automatic retries
+
+The network providers (**Vertex** and the **OpenCode HTTP** client) automatically
+retry *transient, pre-side-effect* request failures with exponential backoff.
+Subprocess providers (Claude Code, Codex) delegate retrying to their own CLI.
+
+The rule: **retry only the request-dispatch window; fatal after any side
+effect.** Once the model starts streaming a `2xx` body (tokens, cost, tool
+calls), errors from there on are never retried — replaying a turn that already
+produced output would double-charge and duplicate side effects.
+
+**Retried (transient):** connection errors (reset/refused/aborted/broken
+pipe/DNS), request timeouts, and `429` / `502` / `503` / `504` *before any
+response body is consumed*.
+**Fatal (never retried):** any other `4xx`/hard `5xx`, decode/`Provider` errors
+after a `2xx` body starts, and `BudgetExceeded` / `Config` / JSON errors.
+
+```rust
+use nucel_agent_sdk::{RetryPolicy, SpawnConfig};
+use nucel_agent_vertex::VertexExecutor;
+use std::time::Duration;
+
+// Default policy: 3 retries, 250 ms base, exponential, capped at 8 s.
+let executor = VertexExecutor::with_adc("my-gcp-project", "us-east5")
+    .await?
+    .with_retry_policy(RetryPolicy {
+        max_retries: 5,
+        base_backoff: Duration::from_millis(500),
+        max_backoff: Duration::from_secs(10),
+    });
+
+// Or override per session; RetryPolicy::none() opts out.
+let config = SpawnConfig {
+    retry_policy: RetryPolicy::with_max_retries(2),
+    ..Default::default()
+};
+```
+
+Each retry is observable on the stream as a `MessageEvent::ApiRetry { attempt,
+message }` event (and logged via `tracing::warn!`). See
+[`docs/tutorials/retries.md`](docs/tutorials/retries.md) for the full
+classification table, per-provider support, `SpawnConfig`/`ExecutorConfig`
+precedence, and the
+[`retry_policy`](crates/unified/examples/retry_policy.rs) +
+[`vertex_with_retry`](crates/unified/examples/vertex_with_retry.rs) examples.
 
 ---
 
@@ -253,11 +303,15 @@ Runnable examples live in the umbrella crate
 - [`with_hooks.rs`](crates/unified/examples/with_hooks.rs) — pre/post tool-use hooks (Claude Code only)
 - [`budget_control.rs`](crates/unified/examples/budget_control.rs) — hit the `budget_usd` cap and handle `BudgetExceeded`
 - [`resume_session.rs`](crates/unified/examples/resume_session.rs) — full spawn → save id → close → resume → continue flow
+- [`retry_policy.rs`](crates/unified/examples/retry_policy.rs) — inspect the default backoff curve and transient-error classification (no network/credentials)
+- [`vertex_with_retry.rs`](crates/unified/examples/vertex_with_retry.rs) — build a Vertex executor with a custom `RetryPolicy` and run a turn (needs `vertex` feature + GCP ADC)
 
 ```bash
 cargo run -p nucel-agent-sdk --example claude_basic -- /path/to/repo
 cargo run -p nucel-agent-sdk --example streaming_claude -- /path/to/repo
 cargo run -p nucel-agent-sdk --example build_executor -- claude-code
+cargo run -p nucel-agent-sdk --example retry_policy
+cargo run -p nucel-agent-sdk --features vertex --example vertex_with_retry -- my-gcp-project us-east5
 ```
 
 ---
@@ -266,7 +320,7 @@ cargo run -p nucel-agent-sdk --example build_executor -- claude-code
 
 - [`docs/usage.md`](docs/usage.md) — Usage patterns, error handling, budget control
 - [`docs/architecture.md`](docs/architecture.md) — Internals, transport details, adding providers
-- [`docs/tutorials/`](docs/tutorials/) — Getting started, multi-turn, streaming, hooks, cost & tokens, budget control, provider comparison
+- [`docs/tutorials/`](docs/tutorials/) — Getting started, multi-turn, streaming, retries, hooks, cost & tokens, budget control, provider comparison
 - [`CHANGELOG.md`](CHANGELOG.md) — Release notes
 
 ## License

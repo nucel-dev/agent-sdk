@@ -170,6 +170,7 @@ fn spawn_config_with_values() {
         hook_config: None,
         cache_breakpoints: vec![],
         thinking_budget: None,
+        ..Default::default()
     };
     assert_eq!(config.model.as_deref(), Some("claude-opus-4-6"));
     assert_eq!(config.max_tokens, Some(8192));

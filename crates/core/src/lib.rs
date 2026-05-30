@@ -44,6 +44,7 @@
 
 pub mod error;
 pub mod executor;
+pub mod retry;
 pub mod session;
 pub mod types;
 
@@ -51,6 +52,7 @@ pub use error::{AgentError, Result};
 pub use executor::{
     AgentCapabilities, AgentExecutor, AvailabilityStatus, ExecutorConfig, SpawnConfig,
 };
+pub use retry::{is_transient, RetryPolicy};
 pub use session::{AgentSession, EventStream, SessionImpl, SessionMetadata};
 pub use types::{
     AgentCost, AgentResponse, CachePoint, ExecutorType, HookConfig, HookHandler, MessageEvent,
