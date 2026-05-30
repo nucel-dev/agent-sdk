@@ -141,6 +141,19 @@ impl VertexExecutor {
         self
     }
 
+    /// Resolve the effective retry policy for a spawn: a non-default
+    /// [`SpawnConfig::retry_policy`] wins, otherwise the executor-level policy
+    /// (set via [`Self::with_retry_policy`]) applies. This keeps both the
+    /// builder knob and the per-call config knob working without an extra
+    /// "unset" sentinel, mirroring the OpenCode provider.
+    fn effective_retry(&self, config: &SpawnConfig) -> RetryPolicy {
+        if config.retry_policy == RetryPolicy::default() {
+            self.retry
+        } else {
+            config.retry_policy
+        }
+    }
+
     /// Resolve the regional `rawPredict` URL for `model`. Public mostly
     /// so integration tests can assert on the URL shape; production
     /// callers don't need it.
@@ -536,7 +549,7 @@ impl AgentExecutor for VertexExecutor {
             auth: Arc::clone(&self.auth),
             http: self.http.clone(),
             api_root: self.api_root.clone(),
-            retry: self.retry,
+            retry: self.effective_retry(config),
         });
 
         let inner = Arc::new(VertexSessionImpl {

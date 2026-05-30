@@ -1,6 +1,6 @@
 [package]
 name = "nucel-agent-bedrock"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 description = "AWS Bedrock provider for Nucel agent-sdk — Claude models via Bedrock Runtime Converse API"
@@ -12,7 +12,7 @@ keywords = ["bedrock", "aws", "claude", "anthropic", "agent"]
 categories = ["development-tools", "api-bindings"]
 
 [dependencies]
-nucel-agent-core = { path = "../core", version = "0.2.0" }
+nucel-agent-core = { path = "../core", version = "0.2.1" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

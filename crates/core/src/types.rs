@@ -73,14 +73,28 @@ pub struct AgentCost {
 impl std::ops::Add for AgentCost {
     type Output = Self;
 
+    /// Sum two cost breakdowns. Token counts use saturating addition so an
+    /// accumulator that runs for a very long session can never panic on
+    /// overflow in a debug build (it pins at `u64::MAX` instead).
     fn add(self, rhs: Self) -> Self {
         Self {
-            input_tokens: self.input_tokens + rhs.input_tokens,
-            output_tokens: self.output_tokens + rhs.output_tokens,
-            cache_read_tokens: self.cache_read_tokens + rhs.cache_read_tokens,
-            cache_creation_tokens: self.cache_creation_tokens + rhs.cache_creation_tokens,
+            input_tokens: self.input_tokens.saturating_add(rhs.input_tokens),
+            output_tokens: self.output_tokens.saturating_add(rhs.output_tokens),
+            cache_read_tokens: self.cache_read_tokens.saturating_add(rhs.cache_read_tokens),
+            cache_creation_tokens: self
+                .cache_creation_tokens
+                .saturating_add(rhs.cache_creation_tokens),
             total_usd: self.total_usd + rhs.total_usd,
         }
+    }
+}
+
+impl std::ops::AddAssign for AgentCost {
+    /// In-place accumulation — the idiom every provider's session uses to fold
+    /// each turn's cost into the running total. Mirrors [`Add`] (saturating
+    /// token math).
+    fn add_assign(&mut self, rhs: Self) {
+        *self = self.clone() + rhs;
     }
 }
 

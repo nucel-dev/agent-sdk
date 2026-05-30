@@ -19,7 +19,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nucel_agent_core::{AgentCost, AgentError, EventStream, HookConfig, MessageEvent, PermissionMode, Result, SpawnConfig};
+use nucel_agent_core::{AgentCost, AgentError, HookConfig, PermissionMode, Result, SpawnConfig};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;

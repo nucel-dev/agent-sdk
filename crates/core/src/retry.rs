@@ -242,4 +242,44 @@ mod tests {
         let err = AgentError::Config("nope".into());
         assert!(!p.should_retry(&err, 0));
     }
+
+    #[test]
+    fn with_max_retries_keeps_default_backoff_curve() {
+        // Only the retry count changes; the backoff curve stays the default.
+        let p = RetryPolicy::with_max_retries(7);
+        assert_eq!(p.max_retries, 7);
+        assert_eq!(p.base_backoff, RetryPolicy::default().base_backoff);
+        assert_eq!(p.max_backoff, RetryPolicy::default().max_backoff);
+        assert_eq!(p.backoff_for(0), Duration::from_millis(250));
+        assert_eq!(p.backoff_for(1), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn none_policy_backoff_is_zero() {
+        // A non-retrying policy still answers backoff queries safely (0).
+        let p = RetryPolicy::none();
+        assert_eq!(p.backoff_for(0), Duration::from_millis(0));
+        assert_eq!(p.backoff_for(5), Duration::from_millis(0));
+    }
+
+    #[test]
+    fn broken_pipe_and_unexpected_eof_are_transient() {
+        // Connection-level drops mid-handshake are safe to retry.
+        for kind in [
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionRefused,
+        ] {
+            let err = AgentError::Io(io::Error::from(kind));
+            assert!(is_transient(&err), "{kind:?} should be transient");
+        }
+    }
+
+    #[test]
+    fn permission_denied_io_is_fatal() {
+        // A permissions error won't fix itself on retry.
+        let err = AgentError::Io(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(!is_transient(&err));
+    }
 }

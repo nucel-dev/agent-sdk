@@ -630,7 +630,6 @@ async fn stream_codex(
     let mut output_tokens = 0_u64;
     let mut content = String::new();
     let mut thread_id_local = String::new();
-    let mut saw_terminal = false;
     let mut had_error: Option<String> = None;
 
     let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
@@ -721,8 +720,6 @@ async fn stream_codex(
     let _ = tx
         .send(Ok(MessageEvent::ResultDone { cost, content, is_error: false }))
         .await;
-    saw_terminal = true;
-    let _ = saw_terminal;
 }
 
 #[async_trait]

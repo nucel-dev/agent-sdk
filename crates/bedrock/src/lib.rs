@@ -428,7 +428,10 @@ mod tests {
             .spawn(Path::new("/tmp"), "hi", &cfg)
             .await
             .unwrap_err();
-        matches!(err, AgentError::BudgetExceeded { .. });
+        assert!(
+            matches!(err, AgentError::BudgetExceeded { .. }),
+            "zero budget must be rejected at spawn: {err:?}"
+        );
     }
 
     #[test]

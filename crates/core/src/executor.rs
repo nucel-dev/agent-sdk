@@ -85,9 +85,11 @@ pub struct SpawnConfig {
     /// Retry policy for *transient*, pre-side-effect request failures
     /// (connection errors, timeouts, `429`/`502`/`503`/`504` before any
     /// response body is consumed). Honored by the network providers (Vertex,
-    /// OpenCode); ignored by subprocess providers that delegate retry to their
-    /// CLI. Additive: defaults to [`RetryPolicy::default`], so existing
-    /// `..Default::default()` construction is unaffected.
+    /// OpenCode): a non-default value here overrides the executor-level policy
+    /// for this spawn. Ignored by subprocess providers (Claude Code, Codex)
+    /// that delegate retry to their CLI, and by Bedrock which relies on the AWS
+    /// SDK's own retry layer. Additive: defaults to [`RetryPolicy::default`],
+    /// so existing `..Default::default()` construction is unaffected.
     ///
     /// (Equivalent to `#[serde(default)]` were these structs ever
     /// Serde-derived — `RetryPolicy: Default` makes the field optional.)

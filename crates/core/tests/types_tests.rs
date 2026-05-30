@@ -278,6 +278,50 @@ fn cost_large_token_counts() {
     assert_eq!(sum.output_tokens, u64::MAX / 2 + 1);
 }
 
+#[test]
+fn cost_add_saturates_on_overflow() {
+    // Two near-max accumulators must pin at u64::MAX rather than panic in a
+    // debug build (where plain `+` would overflow-panic).
+    let a = AgentCost {
+        input_tokens: u64::MAX,
+        output_tokens: u64::MAX,
+        cache_read_tokens: u64::MAX,
+        cache_creation_tokens: u64::MAX,
+        total_usd: 1.0,
+    };
+    let b = AgentCost {
+        input_tokens: 100,
+        output_tokens: 100,
+        cache_read_tokens: 100,
+        cache_creation_tokens: 100,
+        total_usd: 1.0,
+    };
+    let sum = a + b;
+    assert_eq!(sum.input_tokens, u64::MAX);
+    assert_eq!(sum.output_tokens, u64::MAX);
+    assert_eq!(sum.cache_read_tokens, u64::MAX);
+    assert_eq!(sum.cache_creation_tokens, u64::MAX);
+}
+
+#[test]
+fn cost_add_assign_accumulates() {
+    let mut acc = AgentCost::default();
+    let turn = AgentCost {
+        input_tokens: 10,
+        output_tokens: 5,
+        cache_read_tokens: 2,
+        cache_creation_tokens: 1,
+        total_usd: 0.02,
+    };
+    acc += turn.clone();
+    acc += turn;
+    assert_eq!(acc.input_tokens, 20);
+    assert_eq!(acc.output_tokens, 10);
+    assert_eq!(acc.cache_read_tokens, 4);
+    assert_eq!(acc.cache_creation_tokens, 2);
+    assert!((acc.total_usd - 0.04).abs() < 1e-9);
+}
+
 // ── ExecutorType hash / collections ───────────────────────────────────────
 
 #[test]

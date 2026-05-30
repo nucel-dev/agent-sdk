@@ -271,7 +271,11 @@ async fn e2e_opencode_resume_existing_session() {
     session.close().await.unwrap();
 }
 
-/// E2E: server error during session creation.
+/// E2E: a *fatal* server error during session creation surfaces immediately.
+///
+/// A `500` is non-transient (not in the retryable `429`/`502`/`503`/`504`
+/// set), so it propagates on the first attempt as a provider error that names
+/// the provider — no retry, no swallowing.
 #[tokio::test]
 async fn e2e_opencode_server_error_handling() {
     let server = MockServer::start().await;
@@ -279,7 +283,7 @@ async fn e2e_opencode_server_error_handling() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(ResponseTemplate::new(503))
+        .respond_with(ResponseTemplate::new(500))
         .mount(&server)
         .await;
 
@@ -296,9 +300,42 @@ async fn e2e_opencode_server_error_handling() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
-        err.to_string().contains("opencode"),
-        "error should mention provider: {err}"
+        matches!(err, AgentError::Provider { ref provider, .. } if provider == "opencode"),
+        "fatal 500 should surface as a provider error naming opencode: {err}"
     );
+}
+
+/// E2E: a *transient* `503` during session creation is retried under the
+/// default policy, then surfaces as a `RateLimited` error once the retry
+/// budget is exhausted. With [`RetryPolicy::none`] there is no retry and the
+/// same transient error propagates on the first attempt — fast and
+/// deterministic.
+#[tokio::test]
+async fn e2e_opencode_transient_503_surfaces_as_rate_limited() {
+    let server = MockServer::start().await;
+    let repo = create_mock_repo();
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    // Disable retry so the test is deterministic and doesn't sleep through the
+    // backoff curve. The classification is what we're asserting on.
+    let executor =
+        OpencodeExecutor::with_base_url(server.uri()).with_retry_policy(RetryPolicy::none());
+
+    let result = executor
+        .spawn(repo.path(), "test", &SpawnConfig::default())
+        .await;
+
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, AgentError::RateLimited { .. }),
+        "503 must classify as transient RateLimited: {err}"
+    );
+    assert!(err.to_string().contains("503"));
 }
 
 /// E2E: multiple text parts in response are concatenated.

@@ -319,6 +319,39 @@ async fn fatal_4xx_is_not_retried() {
 }
 
 #[tokio::test]
+async fn spawn_config_retry_policy_overrides_executor_default() {
+    // The executor is built with the *default* (retrying) policy, but the
+    // per-spawn `SpawnConfig::retry_policy` is `none()`. Parity contract: the
+    // config wins, so a transient 503 must surface immediately with NO retry.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("scaling up"))
+        // If the config's `none()` policy is honored, the endpoint is hit
+        // exactly once. If the executor default (3 retries) leaked through,
+        // this would be hit 4 times and the assertion fails on drop.
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Executor default = RetryPolicy::default() (retries enabled).
+    let executor =
+        VertexExecutor::with_static_token("p", "us-east5", "tok").with_api_root(server.uri());
+
+    let cfg = SpawnConfig {
+        model: Some("claude-sonnet-4@20251015".into()),
+        budget_usd: Some(5.0),
+        retry_policy: RetryPolicy::none(),
+        ..Default::default()
+    };
+
+    let err = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AgentError::RateLimited { .. }));
+}
+
+#[tokio::test]
 async fn query_stream_emits_api_retry_on_transient_then_completes() {
     let server = MockServer::start().await;
     let url_path =

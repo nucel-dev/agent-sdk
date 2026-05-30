@@ -9,17 +9,50 @@ Crate versions covered in this file:
 
 | Crate | Latest |
 |---|---|
-| `nucel-agent-core` | `0.2.0` |
-| `nucel-agent-claude-code` | `0.2.0` |
-| `nucel-agent-codex` | `0.2.0` |
+| `nucel-agent-core` | `0.2.1` |
+| `nucel-agent-claude-code` | `0.2.1` |
+| `nucel-agent-codex` | `0.2.1` |
 | `nucel-agent-opencode` | `0.2.0` |
-| `nucel-agent-bedrock` | `0.1.0` |
-| `nucel-agent-vertex` | `0.1.0` |
-| `nucel-agent-sdk` (umbrella) | `0.2.0` |
+| `nucel-agent-bedrock` | `0.1.1` |
+| `nucel-agent-vertex` | `0.1.1` |
+| `nucel-agent-sdk` (umbrella) | `0.2.1` |
 
 ---
 
 ## [Unreleased]
+
+### Changed — audit pass: retry parity, overflow-safety, test hardening
+
+- **Vertex retry parity.** `VertexExecutor::spawn` now honors a non-default
+  `SpawnConfig.retry_policy`, overriding the executor-level policy for that
+  spawn — matching the behavior OpenCode already had. Previously Vertex only
+  respected the builder `with_retry_policy(...)` and silently ignored the
+  per-call config field. Purely additive (the default `RetryPolicy` is
+  unchanged, so existing callers are unaffected).
+- **`AgentCost` overflow safety.** `AgentCost + AgentCost` now uses
+  `saturating_add` for all token counts, so a very long-running cost
+  accumulator can never panic on overflow in a debug build (it pins at
+  `u64::MAX`). Added an `AddAssign` impl mirroring `Add` — the in-place
+  accumulation idiom every provider session uses.
+- **Docs.** `SpawnConfig.retry_policy` doc now states that Vertex and OpenCode
+  honor a non-default per-call policy and that Bedrock relies on the AWS SDK's
+  own retry layer.
+- **Tests + fixes.**
+  - Fixed a stale e2e test that asserted a `503` during OpenCode session
+    creation surfaces as a `Provider` error — `503` is now (correctly)
+    classified as transient. Split into two deterministic cases: a fatal `500`
+    that surfaces immediately as a provider error, and a transient `503` that
+    classifies as `RateLimited` under `RetryPolicy::none()`.
+  - Fixed a no-op assertion in the Bedrock zero-budget test (`matches!(...)`
+    without `assert!`).
+  - New Vertex integration test: `SpawnConfig.retry_policy` overrides the
+    executor default (asserts the endpoint is hit exactly once with
+    `RetryPolicy::none()`).
+  - New core unit tests: saturating-add overflow, `AddAssign` accumulation,
+    `with_max_retries` keeps the default backoff curve, `none()` backoff is
+    zero, and extra transient/fatal `io::ErrorKind` classification cases.
+  - Removed dead `EventStream`/`MessageEvent` import (claude-code) and a
+    vestigial `saw_terminal` flag (codex) — quieter build.
 
 ### Added — transient-retry policy (robustness)
 
