@@ -104,10 +104,11 @@ cargo run -p nucel-agent-sdk --example claude_basic
 1. `ClaudeCodeExecutor::new()` builds an empty executor handle. No subprocess
    yet — just the configuration.
 2. `availability()` checks if the `claude` binary is on `$PATH`.
-3. `spawn(...)` launches `claude -p ... --output-format stream-json --verbose`
-   under the given working directory, sends the first prompt over stdin, and
-   reads the first JSONL response. It returns an `AgentSession` with the
-   subprocess still running.
+3. `spawn(...)` launches `claude --output-format stream-json --input-format
+   stream-json --verbose` (interactive mode) under the given working directory,
+   sends the first prompt over stdin, and reads the first JSONL response. It
+   returns an `AgentSession` with the subprocess still running, ready for
+   follow-up turns.
 4. `session.query(...)` writes a follow-up prompt over the same stdin and
    reads the next response — no new process.
 5. `total_cost()` reflects accumulated `usage` events.

@@ -112,7 +112,7 @@ inner `Arc<dyn SessionImpl>` and snapshots metadata via `metadata()`.
 
 | Provider | Transport | Subprocess kept alive? |
 |---|---|---|
-| Claude Code | Subprocess running `claude -p … --output-format stream-json --verbose` | yes (one subprocess per session for multi-turn) |
+| Claude Code | Subprocess running `claude --output-format stream-json --input-format stream-json --verbose` (interactive; prompts written to stdin) | yes (one subprocess per session for multi-turn) |
 | Codex | Subprocess running `codex exec --json …` | **no** — each `query()` spawns a fresh `codex exec` |
 | OpenCode | HTTP REST to `opencode serve` | n/a — stateless client |
 
@@ -124,11 +124,15 @@ inner `Arc<dyn SessionImpl>` and snapshots metadata via `metadata()`.
 - `stdout_reader: BufReader<ChildStdout>` — line-buffered JSONL
 - `stderr_reader: Option<BufReader<ChildStderr>>` — for debug capture
 
-Three entry points:
+Two entry points:
 
-- `start()` — print mode `claude -p <prompt> --output-format stream-json --verbose --max-turns <n>`
-- `start_interactive()` — keeps stdin open, prompts written line-by-line
-- `start_resume()` — adds `--resume <session_id>` to the above
+- `start_interactive()` — `claude --output-format stream-json --input-format
+  stream-json --verbose [--max-turns <n>]`. No `-p`, so the CLI keeps stdin
+  open and accepts prompts across turns. `spawn()` uses this, then writes the
+  first prompt (and every follow-up) to stdin via `send_query`. This is the
+  only spawn path for live sessions — print mode (`-p`) was removed because it
+  exits after one turn and closes stdin, breaking multi-turn `query()`.
+- `start_resume()` — adds `--resume <session_id>` for cross-process resume.
 
 Shutdown:
 

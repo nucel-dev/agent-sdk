@@ -1,10 +1,13 @@
 //! Claude Code provider — wraps the `claude` CLI as a subprocess.
 //!
-//! Spawns `claude -p ... --output-format stream-json --verbose` and speaks
-//! JSONL stdio. Supports:
+//! Spawns `claude --output-format stream-json --input-format stream-json
+//! --verbose` (interactive mode, no `-p`) and speaks JSONL over stdio. Each
+//! prompt — the first and every follow-up — is written to the child's stdin,
+//! so the subprocess stays alive for the whole session. Supports:
 //!
-//! - One-shot and multi-turn queries (single subprocess kept alive per session)
-//! - Cost tracking per session (from `usage` events on the wire)
+//! - Multi-turn queries on one live session (`spawn` then repeated `query`)
+//! - Cross-process resume via `--resume <session_id>` ([`AgentExecutor::resume`])
+//! - Cost tracking per session, including cache-read / cache-creation tokens
 //! - Permission mode configuration ([`PermissionMode`] → `--permission-mode`)
 //! - Budget enforcement (`budget_usd` → cancel on overrun)
 //!
@@ -319,9 +322,12 @@ impl AgentExecutor for ClaudeCodeExecutor {
             });
         }
 
-        let mut proc = ClaudeProcess::start(
+        // Start in interactive multi-turn mode so the subprocess stays alive
+        // and subsequent `query()` / `query_stream()` calls — which write the
+        // next prompt to stdin via `send_query` — actually reach a live CLI.
+        // (Print mode `-p` exits after the first turn, closing stdin.)
+        let mut proc = ClaudeProcess::start_interactive(
             working_dir,
-            prompt,
             config,
             self.api_key.as_deref(),
         )
@@ -330,6 +336,8 @@ impl AgentExecutor for ClaudeCodeExecutor {
         // Capture the pre-minted session id before the read may consume `proc`.
         let session_id = proc.session_id().to_string();
 
+        // Send the first prompt over stdin, then read its streamed response.
+        proc.send_query(prompt).await?;
         let response = proc.read_response(budget).await?;
 
         {

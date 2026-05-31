@@ -295,6 +295,7 @@ Runnable examples live in the umbrella crate
 ([`crates/unified/examples/`](crates/unified/examples)):
 
 - [`claude_basic.rs`](crates/unified/examples/claude_basic.rs) — minimal Claude Code session
+- [`claude_multiturn.rs`](crates/unified/examples/claude_multiturn.rs) — one live session, several sequential `query()` calls, cumulative cost (incl. cache tokens)
 - [`codex_resume.rs`](crates/unified/examples/codex_resume.rs) — spawn, save `session_id`, resume in a new handle
 - [`opencode_http.rs`](crates/unified/examples/opencode_http.rs) — point at a local `opencode serve`
 - [`build_executor.rs`](crates/unified/examples/build_executor.rs) — pick a provider by name and inspect its capabilities
@@ -308,6 +309,7 @@ Runnable examples live in the umbrella crate
 
 ```bash
 cargo run -p nucel-agent-sdk --example claude_basic -- /path/to/repo
+cargo run -p nucel-agent-sdk --example claude_multiturn -- /path/to/repo
 cargo run -p nucel-agent-sdk --example streaming_claude -- /path/to/repo
 cargo run -p nucel-agent-sdk --example build_executor -- claude-code
 cargo run -p nucel-agent-sdk --example retry_policy

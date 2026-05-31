@@ -4,7 +4,7 @@
 //! - `--output-format json` — single JSON result object
 //! - `--output-format stream-json` — streaming JSONL (system, assistant, result)
 
-use nucel_agent_core::{AgentCost, AgentError, AgentResponse, Result};
+use nucel_agent_core::{AgentCost, AgentError, Result};
 use serde_json::Value;
 
 /// Token usage from the CLI.
@@ -172,49 +172,54 @@ pub fn parse_message(line: &str) -> Result<ClaudeMessage> {
                 .and_then(|n| n.as_u64())
                 .unwrap_or(1) as u32;
 
-            // Extract detailed usage from usage object.
+            // Extract detailed usage from the top-level `usage` object.
             let usage = &v["usage"];
-            let input_tokens = usage
+            let mut input_tokens = usage
                 .get("input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let output_tokens = usage
+            let mut output_tokens = usage
                 .get("output_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let cache_read_tokens = usage
+            let mut cache_read_tokens = usage
                 .get("cache_read_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let cache_creation_tokens = usage
+            let mut cache_creation_tokens = usage
                 .get("cache_creation_input_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            // Build cost from modelUsage if available (more accurate).
-            let mut model_costs: Vec<ModelUsage> = Vec::new();
-            if let Some(model_usage) = v.get("modelUsage").and_then(|m| m.as_object()) {
-                for (model_id, data) in model_usage {
-                    model_costs.push(ModelUsage {
-                        input_tokens: data
-                            .get("inputTokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
-                        output_tokens: data
-                            .get("outputTokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
-                        cache_read_input_tokens: data
-                            .get("cacheReadInputTokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
-                        cache_creation_input_tokens: data
-                            .get("cacheCreationInputTokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0),
-                        cost_usd: data.get("costUSD").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                        model_id: model_id.clone(),
-                    });
+            // Parse the per-model `modelUsage` breakdown when present. It carries
+            // authoritative per-model `costUSD` and token counts; we use it as a
+            // fallback for any top-level field the CLI omitted.
+            let model_costs = parse_model_usage(&v);
+            let mut total_cost_usd = total_cost_usd;
+            if !model_costs.is_empty() {
+                if total_cost_usd == 0.0 {
+                    total_cost_usd = model_costs.iter().map(|m| m.cost_usd).sum();
+                }
+                if input_tokens == 0 {
+                    input_tokens = model_costs.iter().map(|m| m.input_tokens).sum();
+                }
+                if output_tokens == 0 {
+                    output_tokens = model_costs.iter().map(|m| m.output_tokens).sum();
+                }
+                if cache_read_tokens == 0 {
+                    cache_read_tokens =
+                        model_costs.iter().map(|m| m.cache_read_input_tokens).sum();
+                }
+                if cache_creation_tokens == 0 {
+                    cache_creation_tokens = model_costs
+                        .iter()
+                        .map(|m| m.cache_creation_input_tokens)
+                        .sum();
+                }
+                if model_costs.len() > 1 {
+                    let ids: Vec<&str> =
+                        model_costs.iter().map(|m| m.model_id.as_str()).collect();
+                    tracing::debug!(models = ?ids, "result spanned multiple models");
                 }
             }
 
@@ -237,33 +242,34 @@ pub fn parse_message(line: &str) -> Result<ClaudeMessage> {
     }
 }
 
-/// Parse a complete non-streaming JSON result into an AgentResponse.
-pub fn parse_single_result(json: &str) -> Result<AgentResponse> {
-    let msg = parse_message(json)?;
-    match msg {
-        ClaudeMessage::Result {
-            text,
-            is_error,
-            cost,
-            ..
-        } => {
-            if is_error {
-                return Err(AgentError::Provider {
-                    provider: "claude-code".into(),
-                    message: format!("agent returned error: {text}"),
-                });
-            }
-            Ok(AgentResponse {
-                content: text,
-                cost,
-                ..Default::default()
-            })
-        }
-        _ => Err(AgentError::Provider {
-            provider: "claude-code".into(),
-            message: "expected result message, got something else".into(),
-        }),
-    }
+/// Parse the `modelUsage` object of a `result` message into per-model rows.
+///
+/// Returns an empty vec when the field is absent. Keys are model ids; values
+/// carry camelCase token counts and `costUSD`.
+fn parse_model_usage(v: &Value) -> Vec<ModelUsage> {
+    let Some(model_usage) = v.get("modelUsage").and_then(|m| m.as_object()) else {
+        return Vec::new();
+    };
+    model_usage
+        .iter()
+        .map(|(model_id, data)| ModelUsage {
+            input_tokens: data.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            output_tokens: data
+                .get("outputTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            cache_read_input_tokens: data
+                .get("cacheReadInputTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            cache_creation_input_tokens: data
+                .get("cacheCreationInputTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            cost_usd: data.get("costUSD").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            model_id: model_id.clone(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -376,21 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_single_result_success() {
-        let json = r#"{"type":"result","result":"Done","total_cost_usd":0.05,"is_error":false,"session_id":"s1"}"#;
-        let resp = parse_single_result(json).unwrap();
-        assert_eq!(resp.content, "Done");
-        assert!((resp.cost.total_usd - 0.05).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn parse_single_result_error() {
-        let json = r#"{"type":"result","result":"Failed","total_cost_usd":0.01,"is_error":true,"session_id":"s1"}"#;
-        let result = parse_single_result(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn parse_system_non_init_returns_other() {
         let line = r#"{"type":"system","subtype":"status","session_id":"s1"}"#;
         let msg = parse_message(line).unwrap();
@@ -487,9 +478,50 @@ mod tests {
     }
 
     #[test]
-    fn parse_single_result_non_result_type_errors() {
-        let json = r#"{"type":"assistant","message":{"content":[]},"session_id":"s1"}"#;
-        let result = parse_single_result(json);
-        assert!(result.is_err());
+    fn parse_result_falls_back_to_model_usage_when_top_level_absent() {
+        // No top-level `usage` or `total_cost_usd`; everything comes from
+        // `modelUsage`. The parser must aggregate per-model rows.
+        let line = r#"{"type":"result","result":"Done","is_error":false,"session_id":"s1","modelUsage":{"claude-opus-4-6":{"inputTokens":100,"outputTokens":40,"cacheReadInputTokens":7,"cacheCreationInputTokens":3,"costUSD":0.5}}}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::Result { cost, .. } => {
+                assert_eq!(cost.input_tokens, 100);
+                assert_eq!(cost.output_tokens, 40);
+                assert_eq!(cost.cache_read_tokens, 7);
+                assert_eq!(cost.cache_creation_tokens, 3);
+                assert!((cost.total_usd - 0.5).abs() < f64::EPSILON);
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn parse_result_aggregates_multiple_models() {
+        let line = r#"{"type":"result","result":"Done","is_error":false,"session_id":"s1","modelUsage":{"claude-opus-4-6":{"inputTokens":10,"outputTokens":5,"costUSD":0.3},"claude-haiku-4-6":{"inputTokens":20,"outputTokens":8,"costUSD":0.1}}}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::Result { cost, .. } => {
+                assert_eq!(cost.input_tokens, 30);
+                assert_eq!(cost.output_tokens, 13);
+                assert!((cost.total_usd - 0.4).abs() < 1e-9);
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn parse_result_prefers_top_level_over_model_usage() {
+        // When the CLI provides authoritative top-level totals, modelUsage
+        // must NOT override them.
+        let line = r#"{"type":"result","result":"Done","is_error":false,"session_id":"s1","total_cost_usd":0.9,"usage":{"input_tokens":1,"output_tokens":2},"modelUsage":{"m":{"inputTokens":999,"outputTokens":999,"costUSD":99.0}}}"#;
+        let msg = parse_message(line).unwrap();
+        match msg {
+            ClaudeMessage::Result { cost, .. } => {
+                assert_eq!(cost.input_tokens, 1);
+                assert_eq!(cost.output_tokens, 2);
+                assert!((cost.total_usd - 0.9).abs() < f64::EPSILON);
+            }
+            _ => panic!("expected Result"),
+        }
     }
 }

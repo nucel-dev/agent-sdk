@@ -10,16 +10,57 @@ Crate versions covered in this file:
 | Crate | Latest |
 |---|---|
 | `nucel-agent-core` | `0.2.1` |
-| `nucel-agent-claude-code` | `0.2.1` |
+| `nucel-agent-claude-code` | `0.2.2` |
 | `nucel-agent-codex` | `0.2.1` |
 | `nucel-agent-opencode` | `0.2.0` |
 | `nucel-agent-bedrock` | `0.1.1` |
 | `nucel-agent-vertex` | `0.1.1` |
-| `nucel-agent-sdk` (umbrella) | `0.2.1` |
+| `nucel-agent-sdk` (umbrella) | `0.2.2` |
 
 ---
 
 ## [Unreleased]
+
+### Fixed — claude-code multi-turn + cache-token accounting (`nucel-agent-claude-code` 0.2.2)
+
+- **Multi-turn `query()` actually works now.** `ClaudeCodeExecutor::spawn`
+  previously launched the CLI in print mode (`-p`), which exits after the
+  first turn and closes stdin. The session's follow-up `query()` /
+  `query_stream()` calls — which write the next prompt to stdin via
+  `send_query` — therefore had no live process to talk to after turn one.
+  `spawn` now uses the interactive path (`--input-format stream-json`, no
+  `-p`) and sends the first prompt over stdin, so the subprocess stays alive
+  for the whole session. This wires up the previously-unused
+  `ClaudeProcess::start_interactive`.
+- **Cache tokens are no longer dropped.** `read_response` (the non-streaming
+  read used by `spawn` / `resume` / `query`) hard-coded `cache_read_tokens: 0`
+  and `cache_creation_tokens: 0` in the returned `AgentCost`. It now
+  accumulates cache-read and cache-creation tokens from `usage` events and
+  the final `result`, matching what the streaming path already reported.
+- **`modelUsage` fallback.** When a `result` message omits top-level
+  `total_cost_usd` / `usage` but carries a per-model `modelUsage` breakdown,
+  the parser now aggregates the per-model `costUSD` and token counts (summing
+  across models) instead of discarding them. Authoritative top-level totals
+  still take precedence when present.
+- **Diagnostics.** `system/init` tool count, rate-limit `session_id`, and a
+  `result` ↔ `init` session-id mismatch are now logged (previously parsed
+  but unread).
+
+### Removed — claude-code dead code
+
+- Dropped the vestigial non-streaming code path: `ClaudeProcess::start`
+  (print mode), `start_oneshot`, `read_oneshot_response`, and
+  `protocol::parse_single_result`. The SDK exclusively uses the streaming
+  JSONL path; these were never reached and only widened the surface. No
+  public `AgentExecutor` / `SessionImpl` API changed.
+
+### Added
+
+- `claude_multiturn` example — one live session, several sequential `query()`
+  calls, exercising the fixed multi-turn path and printing cumulative cost
+  (including cache tokens).
+- `nucel-agent-sdk` (umbrella) bumped to `0.2.2` to pull in claude-code
+  `0.2.2`.
 
 ### Changed — audit pass: retry parity, overflow-safety, test hardening
 

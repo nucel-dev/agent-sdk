@@ -1,7 +1,7 @@
 //! Claude Code subprocess management.
 //!
 //! Based on official Claude Code CLI documentation:
-//! https://code.claude.com/docs/en/cli-reference
+//! <https://code.claude.com/docs/en/cli-reference>
 //!
 //! Permission modes (official CLI values):
 //!   - `default` — standard permission behavior
@@ -24,7 +24,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::protocol::{parse_message, parse_single_result, ClaudeMessage};
+use crate::protocol::{parse_message, ClaudeMessage};
 
 /// Default timeout for Claude Code queries (10 minutes).
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -135,28 +135,14 @@ impl ClaudeProcess {
         }
     }
 
-    /// Start a new Claude Code subprocess with streaming JSONL output.
-    /// Used for the initial spawn — sends the first prompt via -p flag.
-    pub async fn start(
-        working_dir: &Path,
-        prompt: &str,
-        config: &SpawnConfig,
-        api_key: Option<&str>,
-    ) -> Result<Self> {
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let mut cmd = Self::build_command(working_dir, config, api_key, &session_id);
-
-        // Print mode (non-interactive) + streaming JSON output.
-        cmd.arg("-p").arg(prompt);
-        cmd.arg("--output-format").arg("stream-json");
-        cmd.arg("--verbose"); // Required for stream-json with -p.
-        Self::apply_max_turns(&mut cmd, config);
-
-        Self::spawn_child(cmd, session_id).await
-    }
-
     /// Start in interactive multi-turn mode (subprocess stays alive).
-    /// Prompts are sent to stdin, responses read from stdout.
+    ///
+    /// Uses `--input-format stream-json` with **no** `-p`, so the CLI keeps
+    /// stdin open and accepts further prompts across turns. This is the spawn
+    /// path used by [`ClaudeCodeExecutor::spawn`](crate::ClaudeCodeExecutor):
+    /// the first prompt and every follow-up are written to stdin via
+    /// [`send_query`](Self::send_query). Print mode (`-p`) is intentionally
+    /// avoided here because it exits after one turn and closes stdin.
     pub async fn start_interactive(
         working_dir: &Path,
         config: &SpawnConfig,
@@ -169,24 +155,6 @@ impl ClaudeProcess {
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--verbose");
         cmd.arg("--input-format").arg("stream-json");
-        Self::apply_max_turns(&mut cmd, config);
-
-        Self::spawn_child(cmd, session_id).await
-    }
-
-    /// Start in non-streaming mode (single JSON result).
-    pub async fn start_oneshot(
-        working_dir: &Path,
-        prompt: &str,
-        config: &SpawnConfig,
-        api_key: Option<&str>,
-    ) -> Result<Self> {
-        let session_id = uuid::Uuid::new_v4().to_string();
-        let mut cmd = Self::build_command(working_dir, config, api_key, &session_id);
-
-        // Print mode + non-streaming JSON output.
-        cmd.arg("-p").arg(prompt);
-        cmd.arg("--output-format").arg("json");
         Self::apply_max_turns(&mut cmd, config);
 
         Self::spawn_child(cmd, session_id).await
@@ -276,6 +244,8 @@ impl ClaudeProcess {
         let mut total_cost_usd = 0.0_f64;
         let mut input_tokens = 0_u64;
         let mut output_tokens = 0_u64;
+        let mut cache_read_tokens = 0_u64;
+        let mut cache_creation_tokens = 0_u64;
         // The upstream-reported session id from system/init. Used to detect
         // mismatches against our pre-minted id (logged at warn).
         let mut upstream_session_id = String::new();
@@ -303,7 +273,7 @@ impl ClaudeProcess {
                     Ok(ClaudeMessage::SystemInit {
                         session_id: sid,
                         model,
-                        ..
+                        tools,
                     }) => {
                         upstream_session_id = sid;
                         system_model = model;
@@ -319,6 +289,7 @@ impl ClaudeProcess {
                         tracing::debug!(
                             session_id = %self.session_id,
                             model = %system_model,
+                            tools = tools.len(),
                             "claude session started"
                         );
                     }
@@ -339,19 +310,31 @@ impl ClaudeProcess {
                         if let Some(u) = usage {
                             input_tokens += u.input_tokens;
                             output_tokens += u.output_tokens;
+                            cache_read_tokens += u.cache_read_input_tokens;
+                            cache_creation_tokens += u.cache_creation_input_tokens;
                         }
                     }
-                    Ok(ClaudeMessage::RateLimit { .. }) => {
-                        tracing::info!("rate limit event received");
+                    Ok(ClaudeMessage::RateLimit { session_id: sid }) => {
+                        tracing::info!(session_id = %sid, "rate limit event received");
                     }
                     Ok(ClaudeMessage::Result {
                         text,
                         is_error,
                         cost,
-                        session_id: _,
+                        session_id: result_sid,
                         duration_ms,
                         num_turns,
                     }) => {
+                        if !upstream_session_id.is_empty()
+                            && !result_sid.is_empty()
+                            && result_sid != upstream_session_id
+                        {
+                            tracing::warn!(
+                                expected = %upstream_session_id,
+                                got = %result_sid,
+                                "result session_id mismatch"
+                            );
+                        }
                         if !text.is_empty() && !content.contains(&text) {
                             if !content.is_empty() {
                                 content.push('\n');
@@ -362,6 +345,14 @@ impl ClaudeProcess {
                         total_cost_usd = cost.total_usd;
                         input_tokens = cost.input_tokens;
                         output_tokens = cost.output_tokens;
+                        // The CLI omits cache fields from the final `usage` on some
+                        // turns; keep the streamed accumulation if the result is 0.
+                        if cost.cache_read_tokens > 0 {
+                            cache_read_tokens = cost.cache_read_tokens;
+                        }
+                        if cost.cache_creation_tokens > 0 {
+                            cache_creation_tokens = cost.cache_creation_tokens;
+                        }
 
                         tracing::info!(
                             duration_ms = duration_ms,
@@ -428,55 +419,11 @@ impl ClaudeProcess {
 
         Ok(super::AgentResponse {
             content,
-            cost: AgentCost { input_tokens, output_tokens, cache_read_tokens: 0, cache_creation_tokens: 0, total_usd: total_cost_usd },
+            cost: AgentCost { input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, total_usd: total_cost_usd },
             confidence: None,
             requests_escalation: false,
             tool_calls: vec![],
         })
-    }
-
-    /// Read non-streaming JSON response.
-    pub async fn read_oneshot_response(
-        &mut self,
-        budget: f64,
-    ) -> Result<super::AgentResponse> {
-        let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
-
-        let result = tokio::time::timeout(timeout, async {
-            let mut buf = String::new();
-            self.stdout_reader
-                .read_to_string(&mut buf)
-                .await
-                .map_err(AgentError::Io)?;
-
-            parse_single_result(&buf)
-        })
-        .await;
-
-        match result {
-            Ok(resp) => {
-                let resp = resp?;
-                if resp.cost.total_usd > budget {
-                    return Err(AgentError::BudgetExceeded {
-                        limit: budget,
-                        spent: resp.cost.total_usd,
-                    });
-                }
-                Ok(resp)
-            }
-            Err(_) => {
-                let stderr_tail = self.stderr_snapshot().await;
-                let _ = self.shutdown().await;
-                Err(AgentError::Provider {
-                    provider: "claude-code".into(),
-                    message: format!(
-                        "timed out after {}s{}",
-                        timeout.as_secs(),
-                        fmt_stderr_tail(&stderr_tail)
-                    ),
-                })
-            }
-        }
     }
 
     /// Send a prompt for multi-turn mode (writes to stdin).
