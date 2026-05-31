@@ -91,8 +91,8 @@ impl std::ops::Add for AgentCost {
 
 impl std::ops::AddAssign for AgentCost {
     /// In-place accumulation — the idiom every provider's session uses to fold
-    /// each turn's cost into the running total. Mirrors [`Add`] (saturating
-    /// token math).
+    /// each turn's cost into the running total. Mirrors [`Add`](std::ops::Add)
+    /// (saturating token math).
     fn add_assign(&mut self, rhs: Self) {
         *self = self.clone() + rhs;
     }

@@ -89,3 +89,8 @@ path = "examples/retry_policy.rs"
 name = "vertex_with_retry"
 path = "examples/vertex_with_retry.rs"
 required-features = ["vertex"]
+
+[[example]]
+name = "bedrock_basic"
+path = "examples/bedrock_basic.rs"
+required-features = ["bedrock"]

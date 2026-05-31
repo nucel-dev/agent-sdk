@@ -6,13 +6,42 @@
 //! transcript is kept client-side in `Arc<Mutex<Vec<Message>>>`, and cost is
 //! estimated from invocation-metadata token counts.
 //!
+//! # Why Bedrock
+//!
+//! This is the **AWS-native** path to Claude: no `claude` CLI subprocess, no
+//! Anthropic API key, no egress to `api.anthropic.com`. Requests go to the
+//! Bedrock Runtime endpoint in your own AWS account/region over the standard
+//! AWS request-signing path, which is what lets a Claude-powered agent run
+//! inside a locked-down VPC, bill against an existing AWS commit, and inherit
+//! an IAM role instead of a long-lived key. For Nucel that means an operator
+//! can run agents entirely within their AWS boundary.
+//!
 //! # Credentials
 //!
 //! Credentials are resolved with the **default AWS provider chain** —
 //! environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SESSION_TOKEN`),
-//! `~/.aws/credentials`, IMDS, ECS task roles, SSO, etc. If no credentials
-//! are configured, `availability()` reports the failure but `spawn()` will
-//! still attempt the call so the actual SDK error reaches the caller.
+//! `~/.aws/credentials`, SSO, ECS task roles, an EC2 instance profile, or an
+//! EKS Pod Identity / IRSA role (`AWS_WEB_IDENTITY_TOKEN_FILE`). The region
+//! comes from `AWS_REGION` / `AWS_DEFAULT_REGION` or your profile. If no
+//! credentials are configured, [`BedrockExecutor::availability`] reports the
+//! failure but [`spawn`](BedrockExecutor::spawn) still attempts the call so the
+//! actual SDK error reaches the caller rather than being masked.
+//!
+//! # Sessions, cost, and retries
+//!
+//! - **Sessions are client-side.** Each `spawn`/`query` issues one `Converse`
+//!   call; the transcript lives in-process. There is no server-side session to
+//!   look up, so [`resume`](BedrockExecutor::resume) returns an error — persist
+//!   the transcript yourself and re-spawn to continue across processes.
+//! - **Cost is an estimate.** `total_usd` is derived from a best-effort price
+//!   table ([`lookup_price`]); the token counts on [`AgentCost`] are exact and
+//!   authoritative, including prompt-cache read/write tokens when a `cachePoint`
+//!   was used.
+//! - **Retries are the AWS SDK's job.** `aws-sdk-bedrockruntime` retries
+//!   throttling / 5xx internally; by the time an error surfaces here it is
+//!   classified into the SDK-wide [`AgentError`] taxonomy (throttle →
+//!   [`AgentError::RateLimited`], transport drop → [`AgentError::Io`], etc.) so
+//!   the umbrella's `retry::is_transient` and any caller-side policy can react.
 //!
 //! # Minimal example
 //!

@@ -5,8 +5,11 @@
 //! authoritative — the operator should treat reported cost as an
 //! approximation and reconcile against their AWS invoice.
 //!
-//! When Bedrock launches a new region or tier, callers can override the
-//! resolution by passing `BedrockExecutor::with_price_table(...)`.
+//! When Bedrock launches a new region or tier and these numbers drift, the
+//! reported `total_usd` is only ever an estimate — the authoritative token
+//! counts (`input_tokens` / `output_tokens` / cache tokens) are always captured
+//! on [`AgentCost`], so callers that need exact, region-specific pricing can
+//! recompute cost themselves from those counts and ignore `total_usd`.
 
 /// Per-million-token USD pricing.
 #[derive(Debug, Clone, Copy)]

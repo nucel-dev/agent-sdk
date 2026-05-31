@@ -21,6 +21,43 @@ Crate versions covered in this file:
 
 ## [Unreleased]
 
+### Added — developer-facing examples, cross-provider tests, docs (no public API change)
+
+- **New runnable example: `bedrock_basic`** (`crates/unified/examples/bedrock_basic.rs`,
+  `--features bedrock`). Demonstrates the AWS-native path end to end: build the
+  executor from the default AWS credential chain, spawn + multi-turn `query`,
+  read accumulated cost (incl. cache tokens), handle a post-SDK-retry
+  `RateLimited`, and close. Fills the gap where Vertex had a runnable example but
+  Bedrock — Nucel's AWS-native moat — did not. Registered with
+  `required-features = ["bedrock"]`.
+- **New cross-cutting test suite** `crates/unified/tests/cross_provider_tests.rs`
+  (12 tests, no network/CLI/creds). Covers behaviour that must stay consistent
+  *across* providers rather than any single adapter:
+  - *Provider selection* — `build_executor` maps each base provider to the right
+    `ExecutorType`; `available_providers()` stays in sync with what actually
+    builds; malformed/unknown/cased strings return `None`.
+  - *Cost accumulation* — `AgentCost` `Add`/`AddAssign` is associative across a
+    multi-provider fold, saturates token counts (never wraps to 0 on a runaway
+    session), and sums every dimension including cache tokens.
+  - *Retry classification* — the shared `is_transient` / `RetryPolicy` classify a
+    given error class identically regardless of which provider raised it (the
+    contract that lets `build_executor` swap providers without changing retry
+    behaviour), and the default backoff curve is locked deterministic.
+- **Docs.rs improvements on the Bedrock path.** Expanded the `nucel-agent-bedrock`
+  module docs with a "Why Bedrock" section (VPC-local, IAM/IRSA, no Anthropic
+  key — the AWS-native moat) and an explicit "Sessions, cost, and retries"
+  section (client-side transcripts → no `resume`; cost is an estimate while token
+  counts are authoritative; retries are the AWS SDK's job). Documented EKS Pod
+  Identity / IRSA credentials. Corrected the `pricing` module doc that referenced
+  a non-existent `with_price_table` constructor.
+- **Removed two stale duplicate examples** (`build-executor.rs`, `spawn-claude.rs`)
+  that were superseded by their underscore-named, Cargo-registered equivalents
+  (`build_executor`, `claude_basic`). Referenced the cloud-provider examples
+  (`bedrock_basic`, `vertex_with_retry`) from the umbrella crate docs.
+- **Fixed a pre-existing broken intra-doc link** in `nucel-agent-core`
+  (`AgentCost`'s `AddAssign` doc linked `[`Add`]` with no path) so
+  `cargo doc --all-features` is clean under `RUSTDOCFLAGS="-D warnings"`.
+
 ### Fixed — bedrock error classification + cache-token accounting (`nucel-agent-bedrock` 0.1.2)
 
 - **Throttle / quota / overload errors now classify as `RateLimited`, not

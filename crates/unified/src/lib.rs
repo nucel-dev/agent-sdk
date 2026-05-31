@@ -57,6 +57,11 @@
 //! - [`examples/budget_control.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/budget_control.rs) — hit the `budget_usd` cap mid-loop and handle [`AgentError::BudgetExceeded`].
 //! - [`examples/resume_session.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/resume_session.rs) — spawn → save id → close → resume → continue.
 //!
+//! Cloud providers (feature-gated):
+//!
+//! - [`examples/bedrock_basic.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/bedrock_basic.rs) — Claude on **AWS Bedrock** via the default AWS credential chain (`--features bedrock`). The AWS-native path: no CLI, no Anthropic key.
+//! - [`examples/vertex_with_retry.rs`](https://github.com/nucel-dev/agent-sdk/blob/main/crates/unified/examples/vertex_with_retry.rs) — Claude on **GCP Vertex AI** via ADC, with a custom [`RetryPolicy`] (`--features vertex`).
+//!
 //! Run any of them with:
 //!
 //! ```bash
