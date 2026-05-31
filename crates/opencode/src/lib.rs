@@ -187,6 +187,11 @@ impl SessionImpl for OpenCodeSessionImpl {
                 prompt.to_string(),
                 self.config.clone(),
                 self.budget,
+                // Fold the streamed turn's cost into the session total so
+                // `total_cost()` and subsequent budget guards see streamed
+                // spend — parity with the non-streaming `query()` path and with
+                // the claude-code / codex streaming implementations.
+                self.cost.clone(),
             )
             .await
     }

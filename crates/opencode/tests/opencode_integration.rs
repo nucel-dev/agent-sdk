@@ -941,6 +941,88 @@ async fn opencode_retry_disabled_does_not_retry_503() {
     assert!(matches!(err, AgentError::RateLimited { .. }));
 }
 
+// ── Streaming cost accounting ───────────────────────────────────────────────
+
+/// Regression: `query_stream()` must fold the streamed turn's cost into the
+/// session total, so `total_cost()` reflects streamed spend (parity with the
+/// non-streaming `query()` path and with the claude-code / codex adapters).
+/// Previously the streaming path dropped the cost on the floor and a session
+/// driven purely via `query_stream` reported `total_cost() == 0`.
+#[tokio::test]
+async fn opencode_query_stream_accumulates_cost_into_session_total() {
+    use futures::StreamExt;
+    use nucel_agent_core::MessageEvent;
+
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-stream"})))
+        .mount(&server)
+        .await;
+
+    // The prompt response carries the authoritative cost/tokens for the turn.
+    Mock::given(method("POST"))
+        .and(path("/session/sess-stream/prompt"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "streamed answer"}],
+            "cost": 0.0075,
+            "info": { "tokens": { "input": 40, "output": 12 } }
+        })))
+        .mount(&server)
+        .await;
+
+    // The read-only SSE `/event` stream: a single text part then EOF. The body
+    // close lets the stream task fall through to finalize from the prompt
+    // response. (`set_delay` keeps the prompt request from racing ahead of the
+    // SSE open in a way that would matter here.)
+    Mock::given(method("GET"))
+        .and(path("/event"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"type\":\"text\",\"text\":\"streamed answer\"}}}\n\n",
+        ))
+        .mount(&server)
+        .await;
+
+    let exec = OpencodeExecutor::with_base_url(server.uri());
+    let session = exec
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "go",
+            &SpawnConfig {
+                budget_usd: Some(5.0),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("spawn should succeed");
+
+    // Spawn already recorded the first prompt's cost (0.0075). Now drive a
+    // streamed turn and confirm its cost is added on top.
+    let mut stream = session
+        .query_stream("again")
+        .await
+        .expect("query_stream should open");
+
+    let mut saw_result_done = false;
+    while let Some(evt) = stream.next().await {
+        if let Ok(MessageEvent::ResultDone { cost, .. }) = evt {
+            saw_result_done = true;
+            assert!((cost.total_usd - 0.0075).abs() < 1e-9, "ResultDone cost: {:?}", cost);
+        }
+    }
+    assert!(saw_result_done, "stream must terminate with ResultDone");
+
+    // Session total = spawn turn (0.0075) + streamed turn (0.0075).
+    let total = session.total_cost().await.unwrap();
+    assert!(
+        (total.total_usd - 0.015).abs() < 1e-9,
+        "streamed turn cost must be folded into session total; got {total:?}"
+    );
+    assert_eq!(total.input_tokens, 80, "input tokens accumulate across both turns");
+    assert_eq!(total.output_tokens, 24, "output tokens accumulate across both turns");
+}
+
 #[tokio::test]
 async fn opencode_spawnconfig_retry_policy_overrides_executor_default() {
     let server = MockServer::start().await;

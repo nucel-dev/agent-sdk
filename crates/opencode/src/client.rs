@@ -364,8 +364,14 @@ impl OpencodeClient {
     ///
     /// The caller is responsible for sending the prompt via [`Self::prompt`]
     /// in parallel — `/event` is read-only.
-    pub async fn stream_events(&self, session_id: String, prompt: String, config: SpawnConfig, budget: f64)
-        -> Result<nucel_agent_core::EventStream>
+    pub async fn stream_events(
+        &self,
+        session_id: String,
+        prompt: String,
+        config: SpawnConfig,
+        budget: f64,
+        cost_handle: std::sync::Arc<std::sync::Mutex<AgentCost>>,
+    ) -> Result<nucel_agent_core::EventStream>
     {
         use futures::StreamExt;
 
@@ -470,6 +476,17 @@ impl OpencodeClient {
             let final_resp = prompt_handle.await;
             match final_resp {
                 Ok(Ok(resp)) => {
+                    // Fold this turn's cost into the session total before
+                    // emitting ResultDone, so `total_cost()` and later budget
+                    // guards account for streamed spend (parity with `query()`).
+                    {
+                        let mut c = cost_handle.lock().unwrap();
+                        c.input_tokens += resp.cost.input_tokens;
+                        c.output_tokens += resp.cost.output_tokens;
+                        c.cache_read_tokens += resp.cost.cache_read_tokens;
+                        c.cache_creation_tokens += resp.cost.cache_creation_tokens;
+                        c.total_usd += resp.cost.total_usd;
+                    }
                     let _ = prompt_tx.send(Ok(MessageEvent::ResultDone {
                         cost: resp.cost.clone(),
                         content: resp.content,

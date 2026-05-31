@@ -100,6 +100,12 @@ println!("cost: ${:.4}", response.cost.total_usd);
 `collect_stream` does the right thing on `RateLimit` (returns
 `AgentError::RateLimited`) and `Error` (returns `AgentError::Provider`).
 
+> **Streamed cost is accumulated.** Every provider folds a streamed turn's
+> cost into the session total when the stream reaches `ResultDone`, exactly
+> like the non-streaming `query()` path. So `session.total_cost()` reflects
+> spend whether you drive the session with `query()`, `query_stream()`, or a
+> mix — and budget guards on later calls see the running total either way.
+
 ---
 
 ## Cancellation

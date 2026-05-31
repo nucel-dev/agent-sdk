@@ -11,15 +11,46 @@ Crate versions covered in this file:
 |---|---|
 | `nucel-agent-core` | `0.2.1` |
 | `nucel-agent-claude-code` | `0.2.2` |
-| `nucel-agent-codex` | `0.2.1` |
-| `nucel-agent-opencode` | `0.2.0` |
+| `nucel-agent-codex` | `0.2.2` |
+| `nucel-agent-opencode` | `0.2.1` |
 | `nucel-agent-bedrock` | `0.1.1` |
 | `nucel-agent-vertex` | `0.1.1` |
-| `nucel-agent-sdk` (umbrella) | `0.2.2` |
+| `nucel-agent-sdk` (umbrella) | `0.2.3` |
 
 ---
 
 ## [Unreleased]
+
+### Fixed — opencode streaming cost accounting (`nucel-agent-opencode` 0.2.1)
+
+- **Streamed-turn cost is no longer dropped.** `query_stream()` ran the prompt
+  request and emitted a `ResultDone` carrying that turn's cost, but never folded
+  it into the session's running total. A session driven purely through
+  `query_stream` therefore reported `total_cost() == 0`, and budget guards on
+  subsequent calls were blind to streamed spend. The stream path now accumulates
+  the streamed turn's cost (USD + input/output + cache tokens) into the session
+  total, matching the non-streaming `query()` path and the claude-code / codex
+  adapters. This is the same cost-accounting parity gap fixed for claude-code in
+  0.2.2, now closed on OpenCode. New regression test
+  `opencode_query_stream_accumulates_cost_into_session_total`.
+
+### Fixed — codex transient-error classification (`nucel-agent-codex` 0.2.2)
+
+- **Throttle errors now classify as `RateLimited`, not opaque `Provider`.**
+  A `turn.failed` / `error` event whose message signals throttling ("rate
+  limit", "quota", "429", "too many requests", "overloaded") is mapped to
+  `AgentError::RateLimited` so callers — and `AgentSession::collect_stream` —
+  can recognize it via `retry::is_transient`, mirroring how claude-code surfaces
+  a rate-limit event and OpenCode maps a `429`. Codex remains a subprocess
+  provider that delegates request-level retry to its CLI; this only fixes
+  *classification*, it does not add an in-crate retry loop. Everything else
+  still surfaces as a fatal `Provider` error. New unit tests
+  `classify_codex_error_rate_limit_is_transient` and
+  `classify_codex_error_generic_is_fatal_provider`.
+
+### Changed — umbrella re-export bump (`nucel-agent-sdk` 0.2.3)
+
+- Pulls in `nucel-agent-opencode` 0.2.1 and `nucel-agent-codex` 0.2.2.
 
 ### Fixed — claude-code multi-turn + cache-token accounting (`nucel-agent-claude-code` 0.2.2)
 

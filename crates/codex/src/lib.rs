@@ -387,10 +387,10 @@ async fn run_codex(
 
     if had_error {
         let tail = stderr_buf.lock().await.clone();
-        return Err(AgentError::Provider {
-            provider: "codex".into(),
-            message: format!("codex error: {error_msg}{}", fmt_stderr_tail(&tail)),
-        });
+        return Err(classify_codex_error(format!(
+            "codex error: {error_msg}{}",
+            fmt_stderr_tail(&tail)
+        )));
     }
 
     Ok(CodexRunOutput {
@@ -398,6 +398,41 @@ async fn run_codex(
         cost,
         thread_id,
     })
+}
+
+/// Classify a Codex error string (from a `turn.failed`/`error` event, with the
+/// stderr tail appended) into the right [`AgentError`] variant.
+///
+/// Codex is a subprocess provider: it delegates request-level retry to the CLI,
+/// so we never retry inside this crate. But classification still matters — a
+/// caller (or [`AgentSession::collect_stream`]) that hits a throttle should see
+/// a [`AgentError::RateLimited`] (which [`is_transient`] recognizes), not an
+/// opaque [`AgentError::Provider`]. This mirrors how claude-code surfaces a
+/// rate-limit event and how OpenCode maps a `429` to `RateLimited`.
+///
+/// We match conservatively on the well-known throttle phrases Codex emits
+/// ("rate limit", "quota", "429", "too many requests", "overloaded"); anything
+/// else stays a fatal provider error.
+///
+/// [`is_transient`]: nucel_agent_core::retry::is_transient
+/// [`AgentSession::collect_stream`]: nucel_agent_core::AgentSession::collect_stream
+pub(crate) fn classify_codex_error(message: String) -> AgentError {
+    let lower = message.to_ascii_lowercase();
+    let is_throttle = lower.contains("rate limit")
+        || lower.contains("rate-limit")
+        || lower.contains("ratelimit")
+        || lower.contains("too many requests")
+        || lower.contains("429")
+        || lower.contains("quota")
+        || lower.contains("overloaded");
+    if is_throttle {
+        AgentError::RateLimited { message }
+    } else {
+        AgentError::Provider {
+            provider: "codex".into(),
+            message,
+        }
+    }
 }
 
 /// Format a stderr tail for inclusion in error messages.
@@ -688,10 +723,10 @@ async fn stream_codex(
     if let Some(msg) = had_error {
         let tail = stderr_buf.lock().await.clone();
         let _ = tx
-            .send(Err(AgentError::Provider {
-                provider: "codex".into(),
-                message: format!("codex error: {msg}{}", fmt_stderr_tail(&tail)),
-            }))
+            .send(Err(classify_codex_error(format!(
+                "codex error: {msg}{}",
+                fmt_stderr_tail(&tail)
+            ))))
             .await;
         return;
     }
@@ -1039,6 +1074,41 @@ mod tests {
         permission_to_codex_args(&mut cmd, Some(PermissionMode::DontAsk));
         let dbg = format!("{:?}", cmd.as_std());
         assert!(dbg.contains("--sandbox") && dbg.contains("read-only"), "{dbg}");
+    }
+
+    #[test]
+    fn classify_codex_error_rate_limit_is_transient() {
+        // Throttle phrases must map to RateLimited so `is_transient` sees them
+        // and callers can distinguish a throttle from a hard failure.
+        for msg in [
+            "codex error: Rate limit exceeded, retry later",
+            "codex error: You have hit your quota for the day",
+            "codex error: HTTP 429 Too Many Requests",
+            "codex error: the model is overloaded",
+        ] {
+            let err = classify_codex_error(msg.to_string());
+            assert!(
+                matches!(err, AgentError::RateLimited { .. }),
+                "expected RateLimited for {msg:?}, got {err:?}"
+            );
+            assert!(
+                nucel_agent_core::retry::is_transient(&err),
+                "RateLimited must be transient: {msg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_codex_error_generic_is_fatal_provider() {
+        let err = classify_codex_error("codex error: file not found".to_string());
+        assert!(
+            matches!(err, AgentError::Provider { ref provider, .. } if provider == "codex"),
+            "non-throttle errors stay fatal provider errors: {err:?}"
+        );
+        assert!(
+            !nucel_agent_core::retry::is_transient(&err),
+            "a generic provider error must not be retried"
+        );
     }
 
     #[test]
