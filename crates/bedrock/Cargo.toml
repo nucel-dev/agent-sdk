@@ -1,6 +1,6 @@
 [package]
 name = "nucel-agent-bedrock"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 license.workspace = true
 description = "AWS Bedrock provider for Nucel agent-sdk — Claude models via Bedrock Runtime Converse API"

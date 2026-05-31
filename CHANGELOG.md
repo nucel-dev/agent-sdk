@@ -13,13 +13,52 @@ Crate versions covered in this file:
 | `nucel-agent-claude-code` | `0.2.2` |
 | `nucel-agent-codex` | `0.2.2` |
 | `nucel-agent-opencode` | `0.2.1` |
-| `nucel-agent-bedrock` | `0.1.1` |
+| `nucel-agent-bedrock` | `0.1.2` |
 | `nucel-agent-vertex` | `0.1.1` |
-| `nucel-agent-sdk` (umbrella) | `0.2.3` |
+| `nucel-agent-sdk` (umbrella) | `0.2.4` |
 
 ---
 
 ## [Unreleased]
+
+### Fixed — bedrock error classification + cache-token accounting (`nucel-agent-bedrock` 0.1.2)
+
+- **Throttle / quota / overload errors now classify as `RateLimited`, not
+  opaque `Provider`.** Every `Converse` failure previously collapsed into a
+  single `AgentError::Provider`, so a `ThrottlingException` (throttling / account
+  quota) or `ServiceUnavailableException` was indistinguishable from a hard
+  validation error. A new `classify_converse_error` maps the typed `ConverseError`
+  and transport-level `SdkError` variants into the SDK-wide taxonomy:
+  `ThrottlingException` / `ServiceUnavailableException` → `RateLimited`;
+  `ModelTimeoutException` and `SdkError::TimeoutError` → `Timeout`;
+  `SdkError::DispatchFailure` / `ConstructionFailure` (request never left the
+  client) → a transient `Io` error; everything else (validation, access-denied,
+  model errors, decode) stays a fatal `Provider`. This makes
+  `retry::is_transient` and caller-side back-off logic honest about Bedrock
+  throttles, mirroring the Vertex/OpenCode/Codex classification work. Bedrock
+  still delegates the request-level *retry loop* to the AWS SDK's own retry
+  layer (so `SpawnConfig.retry_policy` is intentionally not re-implemented here);
+  this fix only corrects error *type*.
+- **Prompt-cache tokens are now captured.** `run_turn` hard-coded
+  `cache_read_tokens` / `cache_creation_tokens` to `0`. Bedrock `Converse`
+  returns `cacheReadInputTokens` / `cacheWriteInputTokens` in `TokenUsage` when a
+  `cachePoint` is present; these are now folded into per-turn and session
+  `AgentCost`, and the `prompt_caching` capability flag flips to `true`. Negative
+  / absent counters clamp to `0`.
+- New integration tests: `throttling_maps_to_rate_limited`,
+  `service_unavailable_maps_to_rate_limited`, `cache_tokens_are_captured`
+  (all via `aws-smithy-mocks`, no live AWS).
+
+### Added — vertex cache-token regression test (`nucel-agent-vertex` 0.1.1)
+
+- No behavior change. Added `cache_tokens_are_captured_from_usage` to lock in
+  that Vertex's pass-through of Anthropic `cache_read_input_tokens` /
+  `cache_creation_input_tokens` lands in `AgentCost` (previously only covered
+  implicitly).
+
+### Changed — umbrella re-export bump (`nucel-agent-sdk` 0.2.4)
+
+- Pulls in `nucel-agent-bedrock` 0.1.2.
 
 ### Fixed — opencode streaming cost accounting (`nucel-agent-opencode` 0.2.1)
 

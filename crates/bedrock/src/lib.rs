@@ -48,6 +48,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use aws_sdk_bedrockruntime::error::SdkError;
+use aws_sdk_bedrockruntime::operation::converse::ConverseError;
 use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, InferenceConfiguration, Message, SystemContentBlock,
 };
@@ -101,6 +103,60 @@ impl BedrockExecutor {
     /// `AgentExecutor` flow.
     pub fn client(&self) -> &BedrockClient {
         &self.client
+    }
+}
+
+/// Classify a Bedrock `Converse` SDK error into the SDK-wide [`AgentError`]
+/// taxonomy so callers (and the umbrella's `retry::is_transient`) can tell a
+/// *transient* throttle/overload apart from a *fatal* request error.
+///
+/// Mapping:
+/// - `ThrottlingException` / `ServiceUnavailableException` → [`AgentError::RateLimited`]
+///   (transient: the model did no work, the upstream asked us to back off).
+/// - `ModelTimeoutException`, and the transport-level `SdkError::TimeoutError`
+///   → [`AgentError::Timeout`] (transient: never got a response).
+/// - `SdkError::DispatchFailure` (DNS/connect/TLS — request never left) →
+///   [`AgentError::Io`] with a transient kind (safe to retry pre-side-effect).
+/// - Everything else (validation, access-denied, model errors, 4xx, decode) →
+///   [`AgentError::Provider`] (fatal: replaying would fail identically or has
+///   already had a side effect).
+///
+/// Note the AWS SDK applies its *own* retry layer to throttling/5xx before this
+/// classifier ever sees the error, so by the time a `ThrottlingException`
+/// surfaces here the SDK has already exhausted its standard retry budget. We
+/// still classify it as `RateLimited` so the error *type* is honest and any
+/// caller-side policy can react.
+fn classify_converse_error(err: &SdkError<ConverseError>) -> AgentError {
+    // Transport-level failures that never reached the service.
+    match err {
+        SdkError::TimeoutError(_) => {
+            return AgentError::Timeout { seconds: 0 };
+        }
+        SdkError::DispatchFailure(_) | SdkError::ConstructionFailure(_) => {
+            return AgentError::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                format!("Bedrock request dispatch failed: {err}"),
+            ));
+        }
+        _ => {}
+    }
+
+    // Service-modeled errors: inspect the typed `ConverseError`.
+    if let Some(service_err) = err.as_service_error() {
+        if service_err.is_throttling_exception() || service_err.is_service_unavailable_exception() {
+            return AgentError::RateLimited {
+                message: format!("Bedrock throttled/unavailable: {err}"),
+            };
+        }
+        if service_err.is_model_timeout_exception() {
+            return AgentError::Timeout { seconds: 0 };
+        }
+    }
+
+    // Anything else is fatal.
+    AgentError::Provider {
+        provider: "bedrock".into(),
+        message: format!("Bedrock Converse failed: {err}"),
     }
 }
 
@@ -162,10 +218,10 @@ impl BedrockSessionImpl {
             req = req.inference_config(cfg);
         }
 
-        let out = req.send().await.map_err(|e| AgentError::Provider {
-            provider: "bedrock".into(),
-            message: format!("Bedrock Converse failed: {e}"),
-        })?;
+        let out = req
+            .send()
+            .await
+            .map_err(|e| classify_converse_error(&e))?;
 
         // Extract assistant text from the output. The Converse response shape
         // is `output.message.content: Vec<ContentBlock>`.
@@ -182,11 +238,19 @@ impl BedrockSessionImpl {
             self.transcript.lock().unwrap().push(msg.clone());
         }
 
-        // Token usage from invocation metadata.
+        // Token usage from invocation metadata. Bedrock Converse reports
+        // prompt-cache effects via `cacheReadInputTokens` /
+        // `cacheWriteInputTokens` when a `cachePoint` was used; surface them so
+        // cost analytics see cache hits/writes. Negative/None values clamp to 0.
         let usage = out.usage();
-        let (input_tokens, output_tokens) = match usage {
-            Some(u) => (u.input_tokens() as u64, u.output_tokens() as u64),
-            None => (0, 0),
+        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = match usage {
+            Some(u) => (
+                u.input_tokens().max(0) as u64,
+                u.output_tokens().max(0) as u64,
+                u.cache_read_input_tokens().unwrap_or(0).max(0) as u64,
+                u.cache_write_input_tokens().unwrap_or(0).max(0) as u64,
+            ),
+            None => (0, 0, 0, 0),
         };
 
         let price = pricing::lookup(&self.model_id);
@@ -197,8 +261,8 @@ impl BedrockSessionImpl {
         let cost = AgentCost {
             input_tokens,
             output_tokens,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
+            cache_read_tokens,
+            cache_creation_tokens,
             total_usd: usd,
         };
 
@@ -207,6 +271,8 @@ impl BedrockSessionImpl {
             let mut c = self.cost.lock().unwrap();
             c.input_tokens += cost.input_tokens;
             c.output_tokens += cost.output_tokens;
+            c.cache_read_tokens += cost.cache_read_tokens;
+            c.cache_creation_tokens += cost.cache_creation_tokens;
             c.total_usd += cost.total_usd;
         }
 
@@ -325,7 +391,9 @@ impl AgentExecutor for BedrockExecutor {
             structured_output: false,
             streaming: false,
             hooks: false,
-            prompt_caching: false,
+            // Bedrock Converse surfaces cache_read/cache_write input tokens when
+            // a `cachePoint` is present; we capture them into `AgentCost`.
+            prompt_caching: true,
             extended_thinking: false,
         }
     }
@@ -382,7 +450,10 @@ mod tests {
         assert!(!caps.session_resume, "Bedrock has no server-side sessions");
         assert!(!caps.streaming, "Bedrock provider uses Converse (non-stream)");
         assert!(!caps.mcp_support, "Bedrock provider does not bridge MCP");
-        assert!(!caps.prompt_caching, "Prompt cache not wired yet");
+        assert!(
+            caps.prompt_caching,
+            "Bedrock surfaces cache_read/cache_write tokens"
+        );
     }
 
     #[test]

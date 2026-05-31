@@ -68,6 +68,52 @@ async fn spawn_first_turn_hits_endpoint_and_records_cost() {
 }
 
 #[tokio::test]
+async fn cache_tokens_are_captured_from_usage() {
+    // Vertex passes Anthropic's prompt-cache token counters straight through;
+    // they must land in AgentCost so cost analytics see cache hits/writes.
+    let server = MockServer::start().await;
+    let body = json!({
+        "id": "msg_cache",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7@20251024",
+        "content": [ { "type": "text", "text": "cached" } ],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 20,
+            "output_tokens": 8,
+            "cache_read_input_tokens": 512,
+            "cache_creation_input_tokens": 128
+        }
+    });
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+
+    let executor = VertexExecutor::with_static_token("my-proj", "us-east5", "fake-token")
+        .with_api_root(server.uri());
+    let cfg = SpawnConfig {
+        model: Some("claude-opus-4-7@20251024".into()),
+        budget_usd: Some(5.0),
+        ..Default::default()
+    };
+    let session = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .expect("spawn ok");
+
+    let cost = session.total_cost().await.unwrap();
+    assert_eq!(cost.input_tokens, 20);
+    assert_eq!(cost.output_tokens, 8);
+    assert_eq!(cost.cache_read_tokens, 512, "cache read tokens captured");
+    assert_eq!(
+        cost.cache_creation_tokens, 128,
+        "cache creation tokens captured"
+    );
+}
+
+#[tokio::test]
 async fn multi_turn_accumulates() {
     let server = MockServer::start().await;
     let url_path =

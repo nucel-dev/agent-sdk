@@ -9,7 +9,10 @@ use std::path::Path;
 
 // The operation output (struct) and the wire `ConverseOutput` enum share
 // a name in the SDK; alias them to keep the intent obvious.
-use aws_sdk_bedrockruntime::operation::converse::ConverseOutput as ConverseOpOutput;
+use aws_sdk_bedrockruntime::operation::converse::{
+    ConverseError, ConverseOutput as ConverseOpOutput,
+};
+use aws_sdk_bedrockruntime::types::error::{ServiceUnavailableException, ThrottlingException};
 use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, ConverseOutput as ConverseOutputUnion, Message, StopReason,
     TokenUsage,
@@ -17,21 +20,38 @@ use aws_sdk_bedrockruntime::types::{
 use aws_smithy_mocks::{mock, mock_client, RuleMode};
 
 use nucel_agent_bedrock::BedrockExecutor;
-use nucel_agent_core::{AgentExecutor, ExecutorType, SpawnConfig};
+use nucel_agent_core::{AgentError, AgentExecutor, ExecutorType, SpawnConfig};
 
 fn build_converse_op_output(text: &str, input: i32, output: i32) -> ConverseOpOutput {
+    build_converse_op_output_cached(text, input, output, None, None)
+}
+
+/// Like [`build_converse_op_output`] but also sets the prompt-cache token
+/// counters Bedrock returns when a `cachePoint` was used.
+fn build_converse_op_output_cached(
+    text: &str,
+    input: i32,
+    output: i32,
+    cache_read: Option<i32>,
+    cache_write: Option<i32>,
+) -> ConverseOpOutput {
     let assistant_msg = Message::builder()
         .role(ConversationRole::Assistant)
         .content(ContentBlock::Text(text.to_string()))
         .build()
         .expect("build assistant message");
 
-    let usage = TokenUsage::builder()
+    let mut usage = TokenUsage::builder()
         .input_tokens(input)
         .output_tokens(output)
-        .total_tokens(input + output)
-        .build()
-        .expect("build usage");
+        .total_tokens(input + output);
+    if let Some(r) = cache_read {
+        usage = usage.cache_read_input_tokens(r);
+    }
+    if let Some(w) = cache_write {
+        usage = usage.cache_write_input_tokens(w);
+    }
+    let usage = usage.build().expect("build usage");
 
     ConverseOpOutput::builder()
         .output(ConverseOutputUnion::Message(assistant_msg))
@@ -181,4 +201,89 @@ async fn resume_is_not_supported() {
         .unwrap_err();
 
     assert!(matches!(err, nucel_agent_core::AgentError::Provider { .. }));
+}
+
+#[tokio::test]
+async fn throttling_maps_to_rate_limited() {
+    // A Bedrock `ThrottlingException` must surface as the transient
+    // `RateLimited` variant (not an opaque `Provider` error) so callers and the
+    // umbrella's `retry::is_transient` can treat it as a back-off signal.
+    let rule = mock!(aws_sdk_bedrockruntime::Client::converse).then_error(|| {
+        ConverseError::ThrottlingException(
+            ThrottlingException::builder()
+                .message("Too many requests, please wait")
+                .build(),
+        )
+    });
+    let client = mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
+    let executor = BedrockExecutor::from_client(client);
+
+    let cfg = SpawnConfig {
+        model: Some("anthropic.claude-sonnet-4-20251015-v1:0".into()),
+        budget_usd: Some(5.0),
+        ..Default::default()
+    };
+    let err = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AgentError::RateLimited { .. }),
+        "throttling must map to RateLimited, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn service_unavailable_maps_to_rate_limited() {
+    // A 503-style `ServiceUnavailableException` is transient (upstream
+    // overloaded / scaling) → `RateLimited`, mirroring the Vertex provider.
+    let rule = mock!(aws_sdk_bedrockruntime::Client::converse).then_error(|| {
+        ConverseError::ServiceUnavailableException(
+            ServiceUnavailableException::builder()
+                .message("Service is temporarily unavailable")
+                .build(),
+        )
+    });
+    let client = mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
+    let executor = BedrockExecutor::from_client(client);
+
+    let cfg = SpawnConfig {
+        model: Some("anthropic.claude-sonnet-4-20251015-v1:0".into()),
+        budget_usd: Some(5.0),
+        ..Default::default()
+    };
+    let err = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, AgentError::RateLimited { .. }),
+        "service-unavailable must map to RateLimited, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn cache_tokens_are_captured() {
+    // When Bedrock returns cache_read/cache_write input tokens, they must be
+    // folded into AgentCost so cost analytics see prompt-cache effects.
+    let rule = mock!(aws_sdk_bedrockruntime::Client::converse)
+        .then_output(|| build_converse_op_output_cached("cached", 30, 12, Some(100), Some(40)));
+    let client = mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
+    let executor = BedrockExecutor::from_client(client);
+
+    let cfg = SpawnConfig {
+        model: Some("anthropic.claude-sonnet-4-20251015-v1:0".into()),
+        budget_usd: Some(5.0),
+        ..Default::default()
+    };
+    let session = executor
+        .spawn(Path::new("/tmp"), "hi", &cfg)
+        .await
+        .expect("spawn ok");
+
+    let cost = session.total_cost().await.unwrap();
+    assert_eq!(cost.input_tokens, 30);
+    assert_eq!(cost.output_tokens, 12);
+    assert_eq!(cost.cache_read_tokens, 100, "cache read tokens captured");
+    assert_eq!(cost.cache_creation_tokens, 40, "cache write tokens captured");
 }
