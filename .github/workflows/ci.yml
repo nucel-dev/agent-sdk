@@ -49,10 +49,28 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check publish for all crates
+      # Verify the workspace is releasable to crates.io.
+      #
+      # We can't run `cargo publish --dry-run` on the downstream crates here:
+      # they depend on siblings via `{ path = "..", version = "x.y.z" }`, and a
+      # dry-run resolves that version requirement against crates.io. When a
+      # release bumps a sibling (e.g. nucel-agent-core 0.2.0 -> 0.2.1), the new
+      # version isn't on crates.io yet, so the dry-run can't select it and the
+      # downstream crates fail — even though the workspace is perfectly
+      # releasable. The real release publishes in dependency order, so each
+      # sibling is on the registry by the time the next crate needs it.
+      #
+      # Instead:
+      #   * nucel-agent-core has no path-deps, so a full registry-verified
+      #     dry-run is meaningful — it compiles the packaged crate end to end.
+      #   * `cargo package --workspace --no-verify` packages every crate and
+      #     resolves the inter-crate path/version requirements from the local
+      #     workspace, catching manifest, metadata, and file-inclusion problems
+      #     across all 7 crates (the old check only covered 5). Compilation of
+      #     the full workspace is already verified by the Test jobs above, so we
+      #     skip the per-crate verify build that the temporary package registry
+      #     can't wire up for multi-sibling dependents.
+      - name: Check publish (workspace is releasable)
         run: |
           cargo publish -p nucel-agent-core --dry-run
-          cargo publish -p nucel-agent-claude-code --dry-run
-          cargo publish -p nucel-agent-codex --dry-run
-          cargo publish -p nucel-agent-opencode --dry-run
-          cargo publish -p nucel-agent-sdk --dry-run
+          cargo package --workspace --no-verify
