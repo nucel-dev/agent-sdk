@@ -15,8 +15,8 @@
 //! retry classifier is a pure function over [`AgentError`].
 
 use nucel_agent_sdk::{
-    available_providers, build_executor, is_transient, AgentCost, AgentError, ExecutorType,
-    RetryPolicy,
+    AgentCost, AgentError, ExecutorType, RetryPolicy, available_providers, build_executor,
+    is_transient,
 };
 
 // ── 1. Provider selection ────────────────────────────────────────────────

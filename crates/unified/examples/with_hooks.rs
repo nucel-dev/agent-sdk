@@ -18,9 +18,7 @@
 
 use std::path::PathBuf;
 
-use nucel_agent_sdk::{
-    AgentExecutor, ClaudeCodeExecutor, HookConfig, HookHandler, SpawnConfig,
-};
+use nucel_agent_sdk::{AgentExecutor, ClaudeCodeExecutor, HookConfig, HookHandler, SpawnConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -91,7 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("session_id = {}", session.session_id);
 
-    let resp = session.query("Now summarize what you found in one sentence.").await?;
+    let resp = session
+        .query("Now summarize what you found in one sentence.")
+        .await?;
     println!("\n--- response ---\n{}\n----------------", resp.content);
 
     let cost = session.total_cost().await?;

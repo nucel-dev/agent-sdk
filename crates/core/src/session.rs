@@ -134,7 +134,9 @@ impl AgentSession {
                         result: None,
                     });
                 }
-                MessageEvent::ToolResult { success, output, .. } => {
+                MessageEvent::ToolResult {
+                    success, output, ..
+                } => {
                     if let Some(mut t) = pending_tool.take() {
                         t.result = Some(crate::types::ToolResult { success, output });
                         tool_calls.push(t);
@@ -167,10 +169,10 @@ impl AgentSession {
                 _ => {}
             }
         }
-        if let Some(c) = final_content {
-            if !c.is_empty() {
-                content = c;
-            }
+        if let Some(c) = final_content
+            && !c.is_empty()
+        {
+            content = c;
         }
         Ok(AgentResponse {
             content,

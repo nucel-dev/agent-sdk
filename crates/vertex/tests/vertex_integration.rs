@@ -116,8 +116,7 @@ async fn cache_tokens_are_captured_from_usage() {
 #[tokio::test]
 async fn multi_turn_accumulates() {
     let server = MockServer::start().await;
-    let url_path =
-        "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
+    let url_path = "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
 
     Mock::given(method("POST"))
         .and(path(url_path))
@@ -210,10 +209,7 @@ async fn http_error_maps_to_provider_error() {
 async fn malformed_json_maps_to_provider_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw("not-json", "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw("not-json", "application/json"))
         .mount(&server)
         .await;
 
@@ -234,15 +230,13 @@ async fn malformed_json_maps_to_provider_error() {
 #[tokio::test]
 async fn budget_short_circuits_next_turn() {
     let server = MockServer::start().await;
-    let url_path =
-        "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
+    let url_path = "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
 
     // First turn burns the budget.
     Mock::given(method("POST"))
         .and(path(url_path))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(ok_body("ok", 10_000_000, 10_000_000)),
+            ResponseTemplate::new(200).set_body_json(ok_body("ok", 10_000_000, 10_000_000)),
         )
         .expect(1)
         .mount(&server)
@@ -267,8 +261,7 @@ async fn budget_short_circuits_next_turn() {
 #[tokio::test]
 async fn transient_503_then_success_is_retried() {
     let server = MockServer::start().await;
-    let url_path =
-        "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
+    let url_path = "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
 
     // First call → 503 (transient). Second call → 200.
     Mock::given(method("POST"))
@@ -348,8 +341,8 @@ async fn fatal_4xx_is_not_retried() {
         .mount(&server)
         .await;
 
-    let executor = VertexExecutor::with_static_token("p", "us-east5", "tok")
-        .with_api_root(server.uri());
+    let executor =
+        VertexExecutor::with_static_token("p", "us-east5", "tok").with_api_root(server.uri());
     let cfg = SpawnConfig {
         model: Some("claude-sonnet-4@20251015".into()),
         budget_usd: Some(5.0),
@@ -400,8 +393,7 @@ async fn spawn_config_retry_policy_overrides_executor_default() {
 #[tokio::test]
 async fn query_stream_emits_api_retry_on_transient_then_completes() {
     let server = MockServer::start().await;
-    let url_path =
-        "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
+    let url_path = "/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4@20251015:rawPredict";
 
     // Spawn's first turn succeeds so we can obtain a session, then the
     // streamed turn hits a transient 503 before recovering.
@@ -459,5 +451,8 @@ async fn query_stream_emits_api_retry_on_transient_then_completes() {
         }
     }
     assert!(saw_api_retry, "query_stream must surface an ApiRetry event");
-    assert!(saw_result_done, "query_stream must terminate with ResultDone");
+    assert!(
+        saw_result_done,
+        "query_stream must terminate with ResultDone"
+    );
 }

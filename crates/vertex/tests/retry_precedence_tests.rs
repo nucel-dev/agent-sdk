@@ -88,9 +88,8 @@ async fn executor_level_none_disables_retry_when_config_is_default() {
 #[tokio::test]
 async fn executor_level_policy_drives_retry_count_when_config_is_default() {
     let server = MockServer::start().await;
-    let url_path = format!(
-        "/v1/projects/p/locations/us-east5/publishers/anthropic/models/{MODEL}:rawPredict"
-    );
+    let url_path =
+        format!("/v1/projects/p/locations/us-east5/publishers/anthropic/models/{MODEL}:rawPredict");
 
     // Two transient failures...
     Mock::given(method("POST"))
@@ -123,7 +122,10 @@ async fn executor_level_policy_drives_retry_count_when_config_is_default() {
         .expect("spawn should recover after two retries");
 
     let cost = session.total_cost().await.unwrap();
-    assert_eq!(cost.input_tokens, 5, "cost comes from the successful attempt");
+    assert_eq!(
+        cost.input_tokens, 5,
+        "cost comes from the successful attempt"
+    );
     assert_eq!(cost.output_tokens, 3);
 }
 

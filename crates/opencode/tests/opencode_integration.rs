@@ -1,10 +1,10 @@
 //! Wiremock integration tests for OpenCode HTTP client.
 
-use nucel_agent_opencode::OpencodeExecutor;
 use nucel_agent_core::{AgentError, AgentExecutor, ExecutorType, RetryPolicy, SpawnConfig};
+use nucel_agent_opencode::OpencodeExecutor;
+use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use serde_json::json;
 
 /// Fast, deterministic retry policy so retry tests stay snappy.
 fn fast_retry() -> RetryPolicy {
@@ -30,15 +30,24 @@ fn opencode_capabilities() {
     assert!(caps.autonomous_mode, "OpenCode supports autonomous mode");
     assert!(caps.mcp_support, "OpenCode supports MCP");
     assert!(caps.token_usage, "OpenCode reports token usage");
-    assert!(!caps.structured_output, "OpenCode does not support structured output yet");
+    assert!(
+        !caps.structured_output,
+        "OpenCode does not support structured output yet"
+    );
 }
 
 #[test]
 fn opencode_availability_mentions_server() {
     let avail = OpencodeExecutor::new().availability();
     let reason = avail.reason.unwrap();
-    assert!(reason.contains("opencode"), "reason should mention opencode: {reason}");
-    assert!(reason.contains("4096"), "reason should mention default port: {reason}");
+    assert!(
+        reason.contains("opencode"),
+        "reason should mention opencode: {reason}"
+    );
+    assert!(
+        reason.contains("4096"),
+        "reason should mention default port: {reason}"
+    );
 }
 
 #[test]
@@ -63,8 +72,7 @@ async fn opencode_spawn_creates_session_and_prompts() {
     Mock::given(method("POST"))
         .and(path("/session"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "sess-123", "status": "active"})),
+            ResponseTemplate::new(200).set_body_json(json!({"id": "sess-123", "status": "active"})),
         )
         .mount(&server)
         .await;
@@ -72,14 +80,12 @@ async fn opencode_spawn_creates_session_and_prompts() {
     // Mock: POST /session/sess-123/prompt → returns agent response
     Mock::given(method("POST"))
         .and(path("/session/sess-123/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "parts": [
-                    {"type": "text", "text": "Fixed the failing test"}
-                ],
-                "cost": 0.003
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [
+                {"type": "text", "text": "Fixed the failing test"}
+            ],
+            "cost": 0.003
+        })))
         .mount(&server)
         .await;
 
@@ -101,7 +107,10 @@ async fn opencode_spawn_creates_session_and_prompts() {
     assert_eq!(session.executor_type, ExecutorType::OpenCode);
     assert_eq!(session.model.as_deref(), Some("claude-sonnet-4"));
 
-    let cost = session.total_cost().await.expect("cost should be available");
+    let cost = session
+        .total_cost()
+        .await
+        .expect("cost should be available");
     assert!((cost.total_usd - 0.003).abs() < f64::EPSILON);
 }
 
@@ -165,10 +174,7 @@ async fn opencode_spawn_prompt_fails() {
     // Session creation succeeds
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "sess-fail"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-fail"})))
         .mount(&server)
         .await;
 
@@ -199,25 +205,20 @@ async fn opencode_spawn_extracts_multiple_text_parts() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "sess-multi"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-multi"})))
         .mount(&server)
         .await;
 
     Mock::given(method("POST"))
         .and(path("/session/sess-multi/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "parts": [
-                    {"type": "text", "text": "First block"},
-                    {"type": "tool_call", "name": "bash", "args": {}},
-                    {"type": "text", "text": "Second block"}
-                ],
-                "cost": 0.001
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [
+                {"type": "text", "text": "First block"},
+                {"type": "tool_call", "name": "bash", "args": {}},
+                {"type": "text", "text": "Second block"}
+            ],
+            "cost": 0.001
+        })))
         .mount(&server)
         .await;
 
@@ -241,21 +242,16 @@ async fn opencode_spawn_budget_exceeded_by_response() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "sess-expensive"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-expensive"})))
         .mount(&server)
         .await;
 
     Mock::given(method("POST"))
         .and(path("/session/sess-expensive/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "parts": [{"type": "text", "text": "Expensive response"}],
-                "cost": 10.0
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "Expensive response"}],
+            "cost": 10.0
+        })))
         .mount(&server)
         .await;
 
@@ -283,10 +279,7 @@ async fn opencode_spawn_invalid_json_returns_error() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "sess-bad-json"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-bad-json"})))
         .mount(&server)
         .await;
 
@@ -314,12 +307,10 @@ async fn opencode_resume_sends_prompt_to_existing_session() {
 
     Mock::given(method("POST"))
         .and(path("/session/existing-sess/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "parts": [{"type": "text", "text": "Resumed response"}],
-                "cost": 0.002
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "Resumed response"}],
+            "cost": 0.002
+        })))
         .mount(&server)
         .await;
 
@@ -345,21 +336,16 @@ async fn opencode_spawn_with_model_and_system_prompt() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "sess-model"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-model"})))
         .mount(&server)
         .await;
 
     Mock::given(method("POST"))
         .and(path("/session/sess-model/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "parts": [{"type": "text", "text": "Response with model"}],
-                "cost": 0.005
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "Response with model"}],
+            "cost": 0.005
+        })))
         .mount(&server)
         .await;
 
@@ -405,22 +391,17 @@ async fn opencode_spawn_fallback_to_text_field() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "sess-text"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-text"})))
         .mount(&server)
         .await;
 
     // Response uses "text" field instead of "parts" array
     Mock::given(method("POST"))
         .and(path("/session/sess-text/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "text": "Fallback text response",
-                "cost": 0.001
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "text": "Fallback text response",
+            "cost": 0.001
+        })))
         .mount(&server)
         .await;
 
@@ -444,9 +425,7 @@ async fn opencode_spawn_parses_token_usage_v2_shape() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "sess-tok"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-tok"})))
         .mount(&server)
         .await;
 
@@ -465,7 +444,11 @@ async fn opencode_spawn_parses_token_usage_v2_shape() {
 
     let exec = OpencodeExecutor::with_base_url(server.uri());
     let session = exec
-        .spawn(std::path::Path::new("/tmp"), "test", &SpawnConfig::default())
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "test",
+            &SpawnConfig::default(),
+        )
         .await
         .unwrap();
 
@@ -481,9 +464,7 @@ async fn opencode_spawn_parses_token_usage_legacy_shape() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "sess-leg"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-leg"})))
         .mount(&server)
         .await;
 
@@ -500,7 +481,11 @@ async fn opencode_spawn_parses_token_usage_legacy_shape() {
 
     let exec = OpencodeExecutor::with_base_url(server.uri());
     let session = exec
-        .spawn(std::path::Path::new("/tmp"), "test", &SpawnConfig::default())
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "test",
+            &SpawnConfig::default(),
+        )
         .await
         .unwrap();
 
@@ -517,9 +502,7 @@ async fn opencode_session_id_round_trips_from_server() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "real-server-id"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "real-server-id"})))
         .mount(&server)
         .await;
 
@@ -534,7 +517,11 @@ async fn opencode_session_id_round_trips_from_server() {
 
     let exec = OpencodeExecutor::with_base_url(server.uri());
     let session = exec
-        .spawn(std::path::Path::new("/tmp"), "test", &SpawnConfig::default())
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "test",
+            &SpawnConfig::default(),
+        )
         .await
         .unwrap();
     assert_eq!(session.session_id, "real-server-id");
@@ -575,9 +562,7 @@ async fn opencode_close_calls_abort_endpoint() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "sess-abort"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "sess-abort"})))
         .mount(&server)
         .await;
 
@@ -602,7 +587,11 @@ async fn opencode_close_calls_abort_endpoint() {
 
     let exec = OpencodeExecutor::with_base_url(server.uri());
     let session = exec
-        .spawn(std::path::Path::new("/tmp"), "test", &SpawnConfig::default())
+        .spawn(
+            std::path::Path::new("/tmp"),
+            "test",
+            &SpawnConfig::default(),
+        )
         .await
         .unwrap();
 
@@ -622,9 +611,7 @@ async fn opencode_basic_auth_password_is_sent_when_api_key_set() {
     Mock::given(method("POST"))
         .and(path("/session"))
         .and(header("authorization", "Basic b3BlbmNvZGU6bXktc2VjcmV0"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "auth-sess"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "auth-sess"})))
         .mount(&server)
         .await;
 
@@ -653,9 +640,7 @@ async fn opencode_model_body_splits_on_slash_into_provider_and_model() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "model-sess"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "model-sess"})))
         .mount(&server)
         .await;
 
@@ -694,9 +679,7 @@ async fn opencode_directory_sent_as_query_string() {
     Mock::given(method("POST"))
         .and(path("/session"))
         .and(query_param("directory", "/work/dir"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"id": "dir-sess"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "dir-sess"})))
         .mount(&server)
         .await;
 
@@ -728,8 +711,7 @@ async fn opencode_spawn_session_missing_id_field() {
     Mock::given(method("POST"))
         .and(path("/session"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"status": "active"})), // no "id" field
+            ResponseTemplate::new(200).set_body_json(json!({"status": "active"})), // no "id" field
         )
         .mount(&server)
         .await;
@@ -925,8 +907,7 @@ async fn opencode_retry_disabled_does_not_retry_503() {
         .mount(&server)
         .await;
 
-    let exec =
-        OpencodeExecutor::with_base_url(server.uri()).with_retry_policy(RetryPolicy::none());
+    let exec = OpencodeExecutor::with_base_url(server.uri()).with_retry_policy(RetryPolicy::none());
     let err = exec
         .spawn(
             std::path::Path::new("/tmp"),
@@ -1008,7 +989,11 @@ async fn opencode_query_stream_accumulates_cost_into_session_total() {
     while let Some(evt) = stream.next().await {
         if let Ok(MessageEvent::ResultDone { cost, .. }) = evt {
             saw_result_done = true;
-            assert!((cost.total_usd - 0.0075).abs() < 1e-9, "ResultDone cost: {:?}", cost);
+            assert!(
+                (cost.total_usd - 0.0075).abs() < 1e-9,
+                "ResultDone cost: {:?}",
+                cost
+            );
         }
     }
     assert!(saw_result_done, "stream must terminate with ResultDone");
@@ -1019,8 +1004,14 @@ async fn opencode_query_stream_accumulates_cost_into_session_total() {
         (total.total_usd - 0.015).abs() < 1e-9,
         "streamed turn cost must be folded into session total; got {total:?}"
     );
-    assert_eq!(total.input_tokens, 80, "input tokens accumulate across both turns");
-    assert_eq!(total.output_tokens, 24, "output tokens accumulate across both turns");
+    assert_eq!(
+        total.input_tokens, 80,
+        "input tokens accumulate across both turns"
+    );
+    assert_eq!(
+        total.output_tokens, 24,
+        "output tokens accumulate across both turns"
+    );
 }
 
 #[tokio::test]

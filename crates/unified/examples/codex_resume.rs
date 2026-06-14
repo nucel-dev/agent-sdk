@@ -44,9 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Save the session id (in real apps: persist to disk / DB).
     let session_id = session.session_id.clone();
     println!("got session_id = {session_id}");
-    let first = session
-        .query("And what's the dependency manager?")
-        .await?;
+    let first = session.query("And what's the dependency manager?").await?;
     println!("first.content = {}", first.content);
 
     // Drop the session — pretend the process exits here.

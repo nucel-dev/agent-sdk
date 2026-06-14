@@ -176,9 +176,13 @@ impl SessionImpl for ClaudeSessionImpl {
                             return;
                         }
                     };
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     let trimmed = line.trim();
-                    if trimmed.is_empty() { continue; }
+                    if trimmed.is_empty() {
+                        continue;
+                    }
 
                     let v: serde_json::Value = match serde_json::from_str(trimmed) {
                         Ok(v) => v,
@@ -187,62 +191,143 @@ impl SessionImpl for ClaudeSessionImpl {
                     let msg_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
                     match msg_type {
                         "assistant" => {
-                            let blocks = v["message"]["content"].as_array().cloned().unwrap_or_default();
+                            let blocks = v["message"]["content"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default();
                             for block in &blocks {
                                 let bt = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
                                 match bt {
                                     "text" => {
-                                        if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                                            let _ = tx.send(Ok(MessageEvent::TextChunk { text: t.to_string() })).await;
+                                        if let Some(t) = block.get("text").and_then(|t| t.as_str())
+                                        {
+                                            let _ = tx
+                                                .send(Ok(MessageEvent::TextChunk {
+                                                    text: t.to_string(),
+                                                }))
+                                                .await;
                                         }
                                     }
                                     "tool_use" => {
-                                        let id = block.get("id").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                        let name = block.get("name").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                        let input = block.get("input").cloned().unwrap_or(serde_json::Value::Null);
-                                        let _ = tx.send(Ok(MessageEvent::ToolUse { id, name, input })).await;
+                                        let id = block
+                                            .get("id")
+                                            .and_then(|s| s.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let name = block
+                                            .get("name")
+                                            .and_then(|s| s.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let input = block
+                                            .get("input")
+                                            .cloned()
+                                            .unwrap_or(serde_json::Value::Null);
+                                        let _ = tx
+                                            .send(Ok(MessageEvent::ToolUse { id, name, input }))
+                                            .await;
                                     }
                                     "thinking" => {
-                                        let text = block.get("thinking").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                                        let text = block
+                                            .get("thinking")
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
                                         let _ = tx.send(Ok(MessageEvent::Thinking { text })).await;
                                     }
                                     _ => {}
                                 }
                             }
                             if let Some(u) = v["message"].get("usage") {
-                                input_tokens += u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                                output_tokens += u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                                cache_read += u.get("cache_read_input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                                cache_creation += u.get("cache_creation_input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+                                input_tokens +=
+                                    u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+                                output_tokens +=
+                                    u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+                                cache_read += u
+                                    .get("cache_read_input_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(0);
+                                cache_creation += u
+                                    .get("cache_creation_input_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(0);
                             }
                         }
                         "user" => {
-                            let blocks = v["message"]["content"].as_array().cloned().unwrap_or_default();
+                            let blocks = v["message"]["content"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default();
                             for block in &blocks {
-                                if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
-                                    let id = block.get("tool_use_id").and_then(|s| s.as_str()).unwrap_or("").to_string();
-                                    let is_error = block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-                                    let output = block.get("content").and_then(|c| c.as_str()).map(String::from)
+                                if block.get("type").and_then(|t| t.as_str()) == Some("tool_result")
+                                {
+                                    let id = block
+                                        .get("tool_use_id")
+                                        .and_then(|s| s.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let is_error = block
+                                        .get("is_error")
+                                        .and_then(|e| e.as_bool())
+                                        .unwrap_or(false);
+                                    let output = block
+                                        .get("content")
+                                        .and_then(|c| c.as_str())
+                                        .map(String::from)
                                         .or_else(|| block.get("content").map(|c| c.to_string()))
                                         .unwrap_or_default();
-                                    let _ = tx.send(Ok(MessageEvent::ToolResult { tool_use_id: id, success: !is_error, output })).await;
+                                    let _ = tx
+                                        .send(Ok(MessageEvent::ToolResult {
+                                            tool_use_id: id,
+                                            success: !is_error,
+                                            output,
+                                        }))
+                                        .await;
                                 }
                             }
                         }
                         "rate_limit_event" => {
-                            let _ = tx.send(Ok(MessageEvent::RateLimit { message: "rate limit event".into() })).await;
+                            let _ = tx
+                                .send(Ok(MessageEvent::RateLimit {
+                                    message: "rate limit event".into(),
+                                }))
+                                .await;
                         }
                         "result" => {
-                            let result_text = v.get("result").and_then(|r| r.as_str()).unwrap_or("").to_string();
-                            let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-                            total_cost_usd = v.get("total_cost_usd").and_then(|c| c.as_f64()).unwrap_or(total_cost_usd);
+                            let result_text = v
+                                .get("result")
+                                .and_then(|r| r.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let is_error =
+                                v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                            total_cost_usd = v
+                                .get("total_cost_usd")
+                                .and_then(|c| c.as_f64())
+                                .unwrap_or(total_cost_usd);
                             if let Some(u) = v.get("usage") {
-                                input_tokens = u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(input_tokens);
-                                output_tokens = u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(output_tokens);
-                                let crd = u.get("cache_read_input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                                let ccr = u.get("cache_creation_input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                                if crd > 0 { cache_read = crd; }
-                                if ccr > 0 { cache_creation = ccr; }
+                                input_tokens = u
+                                    .get("input_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(input_tokens);
+                                output_tokens = u
+                                    .get("output_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(output_tokens);
+                                let crd = u
+                                    .get("cache_read_input_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(0);
+                                let ccr = u
+                                    .get("cache_creation_input_tokens")
+                                    .and_then(|x| x.as_u64())
+                                    .unwrap_or(0);
+                                if crd > 0 {
+                                    cache_read = crd;
+                                }
+                                if ccr > 0 {
+                                    cache_creation = ccr;
+                                }
                             }
                             let cost = AgentCost {
                                 input_tokens,
@@ -260,18 +345,30 @@ impl SessionImpl for ClaudeSessionImpl {
                                 c.total_usd += cost.total_usd;
                             }
                             if total_cost_usd > budget {
-                                let _ = tx.send(Err(AgentError::BudgetExceeded { limit: budget, spent: total_cost_usd })).await;
+                                let _ = tx
+                                    .send(Err(AgentError::BudgetExceeded {
+                                        limit: budget,
+                                        spent: total_cost_usd,
+                                    }))
+                                    .await;
                                 saw_terminal = true;
                                 return;
                             }
-                            let _ = tx.send(Ok(MessageEvent::ResultDone { cost, content: result_text, is_error })).await;
+                            let _ = tx
+                                .send(Ok(MessageEvent::ResultDone {
+                                    cost,
+                                    content: result_text,
+                                    is_error,
+                                }))
+                                .await;
                             saw_terminal = true;
                             return;
                         }
                         _ => {}
                     }
                 }
-            }).await;
+            })
+            .await;
 
             if res.is_err() {
                 let tail = stderr_buf.lock().await.clone();
@@ -280,9 +377,18 @@ impl SessionImpl for ClaudeSessionImpl {
                 } else {
                     format!("stream timed out (stderr: {})", tail.trim())
                 };
-                let _ = tx.send(Err(AgentError::Provider { provider: "claude-code".into(), message: msg })).await;
+                let _ = tx
+                    .send(Err(AgentError::Provider {
+                        provider: "claude-code".into(),
+                        message: msg,
+                    }))
+                    .await;
             } else if !saw_terminal {
-                let _ = tx.send(Err(AgentError::StreamInterrupted("claude stream ended without result".into()))).await;
+                let _ = tx
+                    .send(Err(AgentError::StreamInterrupted(
+                        "claude stream ended without result".into(),
+                    )))
+                    .await;
             }
         });
 
@@ -326,12 +432,8 @@ impl AgentExecutor for ClaudeCodeExecutor {
         // and subsequent `query()` / `query_stream()` calls — which write the
         // next prompt to stdin via `send_query` — actually reach a live CLI.
         // (Print mode `-p` exits after the first turn, closing stdin.)
-        let mut proc = ClaudeProcess::start_interactive(
-            working_dir,
-            config,
-            self.api_key.as_deref(),
-        )
-        .await?;
+        let mut proc =
+            ClaudeProcess::start_interactive(working_dir, config, self.api_key.as_deref()).await?;
 
         // Capture the pre-minted session id before the read may consume `proc`.
         let session_id = proc.session_id().to_string();

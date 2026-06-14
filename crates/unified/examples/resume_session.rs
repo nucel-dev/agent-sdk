@@ -62,7 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let saved_session_id: String = session.session_id.clone();
     println!("saved session_id = {saved_session_id}");
 
-    let resp = session.query("What language is this project written in?").await?;
+    let resp = session
+        .query("What language is this project written in?")
+        .await?;
     println!("phase 1 response: {}", first_line(&resp.content));
 
     // Phase-1 cost so we can verify cumulative cost survives the resume.
@@ -86,7 +88,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("resumed.session_id = {}", resumed.session_id);
 
-    let follow = resumed.query("And how do I run the tests in this repo?").await?;
+    let follow = resumed
+        .query("And how do I run the tests in this repo?")
+        .await?;
     println!("phase 2 follow-up: {}", first_line(&follow.content));
 
     let final_cost = resumed.total_cost().await.unwrap_or_default();

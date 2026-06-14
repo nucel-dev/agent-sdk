@@ -12,9 +12,7 @@
 use std::time::Duration;
 
 use nucel_agent_core::retry::is_transient;
-use nucel_agent_core::{
-    AgentCost, AgentError, ExecutorConfig, RetryPolicy, SpawnConfig,
-};
+use nucel_agent_core::{AgentCost, AgentError, ExecutorConfig, RetryPolicy, SpawnConfig};
 
 // ── Error classification: transient vs fatal ────────────────────────────────
 

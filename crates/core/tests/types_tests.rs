@@ -18,13 +18,13 @@ fn cost_add_accumulates() {
         input_tokens: 100,
         output_tokens: 50,
         total_usd: 0.05,
-            ..Default::default()
+        ..Default::default()
     };
     let b = AgentCost {
         input_tokens: 200,
         output_tokens: 75,
         total_usd: 0.10,
-            ..Default::default()
+        ..Default::default()
     };
     let sum = a + b;
     assert_eq!(sum.input_tokens, 300);
@@ -38,7 +38,7 @@ fn cost_serialization_roundtrip() {
         input_tokens: 42,
         output_tokens: 17,
         total_usd: 1.23,
-            ..Default::default()
+        ..Default::default()
     };
     let json = serde_json::to_string(&cost).unwrap();
     let back: AgentCost = serde_json::from_str(&json).unwrap();
@@ -250,7 +250,7 @@ fn cost_add_identity() {
         input_tokens: 50,
         output_tokens: 25,
         total_usd: 0.03,
-            ..Default::default()
+        ..Default::default()
     };
     let zero = AgentCost::default();
     let sum = a.clone() + zero;
@@ -265,13 +265,13 @@ fn cost_large_token_counts() {
         input_tokens: u64::MAX / 2,
         output_tokens: u64::MAX / 2,
         total_usd: 999_999.99,
-            ..Default::default()
+        ..Default::default()
     };
     let b = AgentCost {
         input_tokens: 1,
         output_tokens: 1,
         total_usd: 0.01,
-            ..Default::default()
+        ..Default::default()
     };
     let sum = a + b;
     assert_eq!(sum.input_tokens, u64::MAX / 2 + 1);
@@ -338,7 +338,11 @@ fn executor_type_hashable() {
 #[test]
 fn executor_type_deserialize_all_variants() {
     let variants = ["\"claude-code\"", "\"codex\"", "\"open-code\""];
-    let expected = [ExecutorType::ClaudeCode, ExecutorType::Codex, ExecutorType::OpenCode];
+    let expected = [
+        ExecutorType::ClaudeCode,
+        ExecutorType::Codex,
+        ExecutorType::OpenCode,
+    ];
     for (json, exp) in variants.iter().zip(expected.iter()) {
         let parsed: ExecutorType = serde_json::from_str(json).unwrap();
         assert_eq!(&parsed, exp);
@@ -426,17 +430,26 @@ fn response_multiple_tool_calls() {
             ToolCall {
                 name: "read".into(),
                 args: serde_json::json!({"path": "a.rs"}),
-                result: Some(ToolResult { success: true, output: "code".into() }),
+                result: Some(ToolResult {
+                    success: true,
+                    output: "code".into(),
+                }),
             },
             ToolCall {
                 name: "write".into(),
                 args: serde_json::json!({"path": "b.rs", "content": "new"}),
-                result: Some(ToolResult { success: true, output: "ok".into() }),
+                result: Some(ToolResult {
+                    success: true,
+                    output: "ok".into(),
+                }),
             },
             ToolCall {
                 name: "bash".into(),
                 args: serde_json::json!({"cmd": "cargo test"}),
-                result: Some(ToolResult { success: false, output: "FAILED".into() }),
+                result: Some(ToolResult {
+                    success: false,
+                    output: "FAILED".into(),
+                }),
             },
         ],
         ..Default::default()
@@ -471,8 +484,8 @@ fn spawn_config_clone() {
 
 #[tokio::test]
 async fn session_query_and_cost_via_mock() {
-    use std::sync::Arc;
     use async_trait::async_trait;
+    use std::sync::Arc;
 
     struct MockSession;
 
@@ -485,7 +498,7 @@ async fn session_query_and_cost_via_mock() {
                     input_tokens: 10,
                     output_tokens: 5,
                     total_usd: 0.001,
-            ..Default::default()
+                    ..Default::default()
                 },
                 ..Default::default()
             })
@@ -495,7 +508,7 @@ async fn session_query_and_cost_via_mock() {
                 input_tokens: 10,
                 output_tokens: 5,
                 total_usd: 0.001,
-            ..Default::default()
+                ..Default::default()
             })
         }
         async fn close(&self) -> nucel_agent_core::Result<()> {
@@ -532,8 +545,8 @@ async fn session_query_and_cost_via_mock() {
 
 #[tokio::test]
 async fn session_metadata_preserves_working_dir() {
-    use std::sync::Arc;
     use async_trait::async_trait;
+    use std::sync::Arc;
 
     struct NoopSession;
     #[async_trait]
@@ -565,8 +578,8 @@ async fn session_metadata_preserves_working_dir() {
 
 #[test]
 fn session_debug_format() {
-    use std::sync::Arc;
     use async_trait::async_trait;
+    use std::sync::Arc;
 
     struct NoopSession;
     #[async_trait]

@@ -20,9 +20,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use futures::StreamExt;
-use nucel_agent_sdk::{
-    AgentExecutor, ClaudeCodeExecutor, MessageEvent, SpawnConfig,
-};
+use nucel_agent_sdk::{AgentExecutor, ClaudeCodeExecutor, MessageEvent, SpawnConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -92,10 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 writeln!(
                     out,
                     "\n\n=> done (error={is_error})  in/out: {}/{}  cache_read: {}  total: ${:.4}",
-                    cost.input_tokens,
-                    cost.output_tokens,
-                    cost.cache_read_tokens,
-                    cost.total_usd,
+                    cost.input_tokens, cost.output_tokens, cost.cache_read_tokens, cost.total_usd,
                 )?;
                 break;
             }

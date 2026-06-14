@@ -289,9 +289,7 @@ impl AgentExecutor for OpencodeExecutor {
 
         let client = self.make_client(working_dir, self.effective_retry(config));
 
-        let response = client
-            .prompt(session_id, prompt, config, budget)
-            .await?;
+        let response = client.prompt(session_id, prompt, config, budget).await?;
 
         {
             let mut c = cost.lock().unwrap();

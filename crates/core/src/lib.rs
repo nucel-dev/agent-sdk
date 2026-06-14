@@ -52,7 +52,7 @@ pub use error::{AgentError, Result};
 pub use executor::{
     AgentCapabilities, AgentExecutor, AvailabilityStatus, ExecutorConfig, SpawnConfig,
 };
-pub use retry::{is_transient, RetryPolicy};
+pub use retry::{RetryPolicy, is_transient};
 pub use session::{AgentSession, EventStream, SessionImpl, SessionMetadata};
 pub use types::{
     AgentCost, AgentResponse, CachePoint, ExecutorType, HookConfig, HookHandler, MessageEvent,

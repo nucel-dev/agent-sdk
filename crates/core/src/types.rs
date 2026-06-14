@@ -23,11 +23,12 @@ impl std::fmt::Display for ExecutorType {
 ///
 /// This enum is `#[non_exhaustive]` — new variants may be added in minor
 /// versions. Downstream matches MUST include a wildcard arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum PermissionMode {
     /// Agent must prompt user for each operation.
+    #[default]
     Prompt,
     /// Auto-approve file edits only (still prompts for bash, etc.).
     AcceptEdits,
@@ -44,12 +45,6 @@ pub enum PermissionMode {
     /// default (e.g. workspace-write sandbox for Codex, default permission mode
     /// for Claude Code). Useful when you don't want to be opinionated.
     Auto,
-}
-
-impl Default for PermissionMode {
-    fn default() -> Self {
-        Self::Prompt
-    }
 }
 
 /// Cost breakdown for a single query or session.
@@ -99,7 +94,7 @@ impl std::ops::AddAssign for AgentCost {
 }
 
 /// Response from a coding agent query.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentResponse {
     /// Text response from the agent.
     pub content: String,
@@ -126,18 +121,6 @@ pub struct ToolCall {
 pub struct ToolResult {
     pub success: bool,
     pub output: String,
-}
-
-impl Default for AgentResponse {
-    fn default() -> Self {
-        Self {
-            content: String::new(),
-            cost: AgentCost::default(),
-            confidence: None,
-            requests_escalation: false,
-            tool_calls: vec![],
-        }
-    }
 }
 
 /// Event emitted by a streaming query.

@@ -8,7 +8,7 @@ use crate::session::AgentSession;
 use crate::types::{CachePoint, ExecutorType, HookConfig, PermissionMode};
 
 /// Capability flags for a provider implementation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AgentCapabilities {
     /// Can resume/fork from an existing session.
     pub session_resume: bool,
@@ -28,22 +28,6 @@ pub struct AgentCapabilities {
     pub prompt_caching: bool,
     /// Supports extended-thinking budget.
     pub extended_thinking: bool,
-}
-
-impl Default for AgentCapabilities {
-    fn default() -> Self {
-        Self {
-            session_resume: false,
-            token_usage: false,
-            mcp_support: false,
-            autonomous_mode: false,
-            structured_output: false,
-            streaming: false,
-            hooks: false,
-            prompt_caching: false,
-            extended_thinking: false,
-        }
-    }
 }
 
 /// Runtime availability of the provider.

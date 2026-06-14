@@ -24,7 +24,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::protocol::{parse_message, ClaudeMessage};
+use crate::protocol::{ClaudeMessage, parse_message};
 
 /// Default timeout for Claude Code queries (10 minutes).
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
@@ -83,14 +83,16 @@ impl ClaudeProcess {
 
         // Permission mode (official CLI flag).
         if let Some(mode) = &config.permission_mode {
-            cmd.arg("--permission-mode").arg(permission_mode_to_cli(*mode));
+            cmd.arg("--permission-mode")
+                .arg(permission_mode_to_cli(*mode));
         }
 
         // Budget enforcement (official CLI flag, print mode only).
-        if let Some(budget) = config.budget_usd {
-            if budget > 0.0 && budget < f64::MAX {
-                cmd.arg("--max-budget-usd").arg(format!("{budget}"));
-            }
+        if let Some(budget) = config.budget_usd
+            && budget > 0.0
+            && budget < f64::MAX
+        {
+            cmd.arg("--max-budget-usd").arg(format!("{budget}"));
         }
 
         // System prompt.
@@ -419,7 +421,13 @@ impl ClaudeProcess {
 
         Ok(super::AgentResponse {
             content,
-            cost: AgentCost { input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, total_usd: total_cost_usd },
+            cost: AgentCost {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                total_usd: total_cost_usd,
+            },
             confidence: None,
             requests_escalation: false,
             tool_calls: vec![],
@@ -501,10 +509,7 @@ fn fmt_stderr_tail(tail: &str) -> String {
 }
 
 /// Background task: drain the child's stderr into a rolling 4 KiB buffer.
-async fn drain_stderr(
-    stderr: tokio::process::ChildStderr,
-    buf: Arc<AsyncMutex<String>>,
-) {
+async fn drain_stderr(stderr: tokio::process::ChildStderr, buf: Arc<AsyncMutex<String>>) {
     let mut reader = BufReader::new(stderr);
     let mut chunk = vec![0u8; 1024];
     loop {
@@ -531,6 +536,47 @@ async fn drain_stderr(
     }
 }
 
+/// Serialize a [`HookConfig`] into Claude Code's `settings.json` `hooks` shape.
+pub(crate) fn hook_config_to_settings_json(cfg: &HookConfig) -> serde_json::Value {
+    fn handler_to_entry(h: &nucel_agent_core::HookHandler) -> serde_json::Value {
+        let mut hook = serde_json::json!({
+            "type": "command",
+            "command": h.command,
+        });
+        if let Some(t) = h.timeout_seconds {
+            hook["timeout"] = serde_json::json!(t);
+        }
+        let mut entry = serde_json::json!({ "hooks": [hook] });
+        if let Some(m) = &h.matcher {
+            entry["matcher"] = serde_json::json!(m);
+        }
+        entry
+    }
+    let mut hooks = serde_json::Map::new();
+    if let Some(h) = &cfg.pre_tool_use {
+        hooks.insert(
+            "PreToolUse".into(),
+            serde_json::json!([handler_to_entry(h)]),
+        );
+    }
+    if let Some(h) = &cfg.post_tool_use {
+        hooks.insert(
+            "PostToolUse".into(),
+            serde_json::json!([handler_to_entry(h)]),
+        );
+    }
+    if let Some(h) = &cfg.on_stop {
+        hooks.insert("Stop".into(), serde_json::json!([handler_to_entry(h)]));
+    }
+    if let Some(h) = &cfg.user_prompt_submit {
+        hooks.insert(
+            "UserPromptSubmit".into(),
+            serde_json::json!([handler_to_entry(h)]),
+        );
+    }
+    serde_json::json!({ "hooks": hooks })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,7 +584,10 @@ mod tests {
     #[test]
     fn permission_mode_to_cli_mapping() {
         // Legacy aliases preserved.
-        assert_eq!(permission_mode_to_cli(PermissionMode::AcceptEdits), "acceptEdits");
+        assert_eq!(
+            permission_mode_to_cli(PermissionMode::AcceptEdits),
+            "acceptEdits"
+        );
         assert_eq!(
             permission_mode_to_cli(PermissionMode::BypassPermissions),
             "bypassPermissions"
@@ -570,36 +619,3 @@ mod tests {
         assert!(out.contains("stderr:"));
     }
 }
-
-/// Serialize a [`HookConfig`] into Claude Code's `settings.json` `hooks` shape.
-pub(crate) fn hook_config_to_settings_json(cfg: &HookConfig) -> serde_json::Value {
-    fn handler_to_entry(h: &nucel_agent_core::HookHandler) -> serde_json::Value {
-        let mut hook = serde_json::json!({
-            "type": "command",
-            "command": h.command,
-        });
-        if let Some(t) = h.timeout_seconds {
-            hook["timeout"] = serde_json::json!(t);
-        }
-        let mut entry = serde_json::json!({ "hooks": [hook] });
-        if let Some(m) = &h.matcher {
-            entry["matcher"] = serde_json::json!(m);
-        }
-        entry
-    }
-    let mut hooks = serde_json::Map::new();
-    if let Some(h) = &cfg.pre_tool_use {
-        hooks.insert("PreToolUse".into(), serde_json::json!([handler_to_entry(h)]));
-    }
-    if let Some(h) = &cfg.post_tool_use {
-        hooks.insert("PostToolUse".into(), serde_json::json!([handler_to_entry(h)]));
-    }
-    if let Some(h) = &cfg.on_stop {
-        hooks.insert("Stop".into(), serde_json::json!([handler_to_entry(h)]));
-    }
-    if let Some(h) = &cfg.user_prompt_submit {
-        hooks.insert("UserPromptSubmit".into(), serde_json::json!([handler_to_entry(h)]));
-    }
-    serde_json::json!({ "hooks": hooks })
-}
-

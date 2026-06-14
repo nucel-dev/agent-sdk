@@ -78,10 +78,10 @@
 
 // Re-export core types.
 pub use nucel_agent_core::{
-    is_transient, AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse,
-    AgentSession, AvailabilityStatus, CachePoint, EventStream, ExecutorType, HookConfig,
-    HookHandler, MessageEvent, PermissionMode, Result, RetryPolicy, SessionImpl, SessionMetadata,
-    SpawnConfig,
+    AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
+    AvailabilityStatus, CachePoint, EventStream, ExecutorType, HookConfig, HookHandler,
+    MessageEvent, PermissionMode, Result, RetryPolicy, SessionImpl, SessionMetadata, SpawnConfig,
+    is_transient,
 };
 
 /// Re-export of the retry policy module for callers that want the
@@ -158,7 +158,7 @@ pub fn build_executor(
 fn build_bedrock_blocking() -> Option<BedrockExecutor> {
     // If we're already inside a tokio runtime, `block_on` would deadlock;
     // spawn_blocking + Handle::block_on is the safe pattern.
-    let exec = if tokio::runtime::Handle::try_current().is_ok() {
+    if tokio::runtime::Handle::try_current().is_ok() {
         std::thread::scope(|s| {
             s.spawn(|| {
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -177,8 +177,7 @@ fn build_bedrock_blocking() -> Option<BedrockExecutor> {
             .build()
             .ok()?;
         Some(rt.block_on(BedrockExecutor::new()))
-    };
-    exec
+    }
 }
 
 #[cfg(feature = "vertex")]
@@ -209,6 +208,11 @@ fn build_vertex_blocking(project: &str, region: &str) -> Option<VertexExecutor> 
 
 /// List all available provider names — feature-gated providers only show
 /// up when their crate feature is enabled.
+//
+// The `return`s are load-bearing: exactly one `cfg` block is compiled, and the
+// non-final ones need an explicit return. `needless_return` only fires under
+// the all-features build where the first block becomes the de-facto tail.
+#[allow(clippy::needless_return)]
 pub fn available_providers() -> &'static [&'static str] {
     #[cfg(all(feature = "bedrock", feature = "vertex"))]
     {
@@ -319,7 +323,10 @@ mod tests {
             let status = exec.availability();
             // Either available or has a reason
             if !status.available {
-                assert!(status.reason.is_some(), "{provider} unavailable but no reason");
+                assert!(
+                    status.reason.is_some(),
+                    "{provider} unavailable but no reason"
+                );
             }
         }
     }

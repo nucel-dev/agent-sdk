@@ -170,7 +170,9 @@ mod tests {
     #[test]
     fn none_policy_never_retries() {
         let p = RetryPolicy::none();
-        let err = AgentError::RateLimited { message: "slow down".into() };
+        let err = AgentError::RateLimited {
+            message: "slow down".into(),
+        };
         assert!(!p.should_retry(&err, 0));
     }
 
@@ -189,7 +191,9 @@ mod tests {
 
     #[test]
     fn rate_limit_is_transient() {
-        assert!(is_transient(&AgentError::RateLimited { message: "x".into() }));
+        assert!(is_transient(&AgentError::RateLimited {
+            message: "x".into()
+        }));
     }
 
     #[test]
@@ -216,7 +220,10 @@ mod tests {
     #[test]
     fn config_and_budget_errors_are_fatal() {
         assert!(!is_transient(&AgentError::Config("bad".into())));
-        assert!(!is_transient(&AgentError::BudgetExceeded { limit: 1.0, spent: 2.0 }));
+        assert!(!is_transient(&AgentError::BudgetExceeded {
+            limit: 1.0,
+            spent: 2.0
+        }));
     }
 
     #[test]
@@ -229,7 +236,9 @@ mod tests {
     #[test]
     fn should_retry_respects_budget() {
         let p = RetryPolicy::with_max_retries(2);
-        let err = AgentError::RateLimited { message: "x".into() };
+        let err = AgentError::RateLimited {
+            message: "x".into(),
+        };
         assert!(p.should_retry(&err, 0));
         assert!(p.should_retry(&err, 1));
         // Budget exhausted on the third failure.

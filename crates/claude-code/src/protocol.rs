@@ -167,10 +167,7 @@ pub fn parse_message(line: &str) -> Result<ClaudeMessage> {
                 .and_then(|c| c.as_f64())
                 .unwrap_or(0.0);
             let duration_ms = v.get("duration_ms").and_then(|d| d.as_u64()).unwrap_or(0);
-            let num_turns = v
-                .get("num_turns")
-                .and_then(|n| n.as_u64())
-                .unwrap_or(1) as u32;
+            let num_turns = v.get("num_turns").and_then(|n| n.as_u64()).unwrap_or(1) as u32;
 
             // Extract detailed usage from the top-level `usage` object.
             let usage = &v["usage"];
@@ -207,8 +204,7 @@ pub fn parse_message(line: &str) -> Result<ClaudeMessage> {
                     output_tokens = model_costs.iter().map(|m| m.output_tokens).sum();
                 }
                 if cache_read_tokens == 0 {
-                    cache_read_tokens =
-                        model_costs.iter().map(|m| m.cache_read_input_tokens).sum();
+                    cache_read_tokens = model_costs.iter().map(|m| m.cache_read_input_tokens).sum();
                 }
                 if cache_creation_tokens == 0 {
                     cache_creation_tokens = model_costs
@@ -217,8 +213,7 @@ pub fn parse_message(line: &str) -> Result<ClaudeMessage> {
                         .sum();
                 }
                 if model_costs.len() > 1 {
-                    let ids: Vec<&str> =
-                        model_costs.iter().map(|m| m.model_id.as_str()).collect();
+                    let ids: Vec<&str> = model_costs.iter().map(|m| m.model_id.as_str()).collect();
                     tracing::debug!(models = ?ids, "result spanned multiple models");
                 }
             }
@@ -253,7 +248,10 @@ fn parse_model_usage(v: &Value) -> Vec<ModelUsage> {
     model_usage
         .iter()
         .map(|(model_id, data)| ModelUsage {
-            input_tokens: data.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            input_tokens: data
+                .get("inputTokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
             output_tokens: data
                 .get("outputTokens")
                 .and_then(|v| v.as_u64())
@@ -459,7 +457,8 @@ mod tests {
 
     #[test]
     fn parse_system_init_no_tools() {
-        let line = r#"{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-4-6"}"#;
+        let line =
+            r#"{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-4-6"}"#;
         let msg = parse_message(line).unwrap();
         match msg {
             ClaudeMessage::SystemInit { tools, model, .. } => {

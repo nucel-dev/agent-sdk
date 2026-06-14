@@ -56,9 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(s) => s,
         Err(AgentError::BudgetExceeded { spent, limit }) => {
             // Even spawn can trip the cap (e.g. cap is 0 or the first turn is huge).
-            eprintln!(
-                "spawn already over budget: spent ${spent:.4} of ${limit:.4} — exiting"
-            );
+            eprintln!("spawn already over budget: spent ${spent:.4} of ${limit:.4} — exiting");
             return Ok(());
         }
         Err(e) => return Err(e.into()),
@@ -88,9 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(AgentError::BudgetExceeded { spent, limit }) => {
                 // Terminal: subsequent query() calls keep returning this. Stop.
-                eprintln!(
-                    "\n[turn {turn}] budget hit: spent ${spent:.4} of ${limit:.4}"
-                );
+                eprintln!("\n[turn {turn}] budget hit: spent ${spent:.4} of ${limit:.4}");
                 eprintln!("closing session and bailing out cleanly.");
                 break;
             }
