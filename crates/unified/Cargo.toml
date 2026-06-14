@@ -7,7 +7,7 @@ description = "Unified AI coding agent SDK — provider-agnostic abstraction for
 repository = "https://github.com/nucel-dev/agent-sdk"
 homepage = "https://github.com/nucel-dev/agent-sdk"
 documentation = "https://docs.rs/nucel-agent-sdk"
-readme = "../../README.md"
+readme = "README.md"
 keywords = ["agent", "coding", "claude", "ai", "sdk"]
 categories = ["development-tools", "api-bindings"]
 
