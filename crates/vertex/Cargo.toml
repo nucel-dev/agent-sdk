@@ -22,7 +22,7 @@ tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
 reqwest.workspace = true
 uuid.workspace = true
-gcp_auth = "0.12"
+gcp_auth.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

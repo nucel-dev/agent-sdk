@@ -91,8 +91,14 @@ fn claude_capabilities_advertise_streaming_hooks_caching_thinking() {
     let caps = ClaudeCodeExecutor::new().capabilities();
     assert!(caps.streaming, "Claude Code should advertise streaming");
     assert!(caps.hooks, "Claude Code should advertise hooks");
-    assert!(caps.prompt_caching, "Claude Code should advertise prompt_caching");
-    assert!(caps.extended_thinking, "Claude Code should advertise extended_thinking");
+    assert!(
+        caps.prompt_caching,
+        "Claude Code should advertise prompt_caching"
+    );
+    assert!(
+        caps.extended_thinking,
+        "Claude Code should advertise extended_thinking"
+    );
 }
 
 #[test]

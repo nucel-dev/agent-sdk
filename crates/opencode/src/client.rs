@@ -45,10 +45,10 @@ impl OpencodeClient {
         let mut headers = reqwest::header::HeaderMap::new();
 
         // Legacy directory header (back-compat with pre-v2 servers).
-        if let Some(dir) = directory {
-            if let Ok(val) = reqwest::header::HeaderValue::from_str(dir) {
-                headers.insert("x-opencode-directory", val);
-            }
+        if let Some(dir) = directory
+            && let Ok(val) = reqwest::header::HeaderValue::from_str(dir)
+        {
+            headers.insert("x-opencode-directory", val);
         }
 
         let mut builder = reqwest::Client::builder();
@@ -172,13 +172,12 @@ impl OpencodeClient {
                     } else {
                         // 2xx — PAST the side-effect boundary. A decode failure
                         // here is fatal: do not replay.
-                        response
-                            .json::<serde_json::Value>()
-                            .await
-                            .map_err(|e| AgentError::Provider {
+                        response.json::<serde_json::Value>().await.map_err(|e| {
+                            AgentError::Provider {
                                 provider: "opencode".into(),
                                 message: format!("failed to parse {op} response: {e}"),
-                            })
+                            }
+                        })
                     }
                 }
             };
@@ -304,29 +303,26 @@ impl OpencodeClient {
         let mut content = String::new();
         if let Some(parts) = data.get("parts").and_then(|p| p.as_array()) {
             for part in parts {
-                if part.get("type").and_then(|t| t.as_str()) == Some("text") {
-                    if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                        if !content.is_empty() {
-                            content.push('\n');
-                        }
-                        content.push_str(text);
+                if part.get("type").and_then(|t| t.as_str()) == Some("text")
+                    && let Some(text) = part.get("text").and_then(|t| t.as_str())
+                {
+                    if !content.is_empty() {
+                        content.push('\n');
                     }
+                    content.push_str(text);
                 }
             }
         }
 
         // If no parts, try the direct text field.
-        if content.is_empty() {
-            if let Some(text) = data.get("text").and_then(|t| t.as_str()) {
-                content = text.to_string();
-            }
+        if content.is_empty()
+            && let Some(text) = data.get("text").and_then(|t| t.as_str())
+        {
+            content = text.to_string();
         }
 
         // Extract cost.
-        let cost_usd = data
-            .get("cost")
-            .and_then(|c| c.as_f64())
-            .unwrap_or(0.0);
+        let cost_usd = data.get("cost").and_then(|c| c.as_f64()).unwrap_or(0.0);
 
         // Token usage — prefer the new `info.tokens` shape, fall back to the
         // legacy top-level `tokens` shape.
@@ -354,8 +350,6 @@ impl OpencodeClient {
         })
     }
 
-
-
     /// Open an SSE stream against `GET /event` and emit `MessageEvent`s.
     ///
     /// The OpenCode server's `/event` endpoint emits JSON events for the
@@ -371,8 +365,7 @@ impl OpencodeClient {
         config: SpawnConfig,
         budget: f64,
         cost_handle: std::sync::Arc<std::sync::Mutex<AgentCost>>,
-    ) -> Result<nucel_agent_core::EventStream>
-    {
+    ) -> Result<nucel_agent_core::EventStream> {
         use futures::StreamExt;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<MessageEvent>>(64);
@@ -396,18 +389,22 @@ impl OpencodeClient {
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    let _ = tx.send(Err(AgentError::Provider {
-                        provider: "opencode".into(),
-                        message: format!("failed to open SSE stream: {e}"),
-                    })).await;
+                    let _ = tx
+                        .send(Err(AgentError::Provider {
+                            provider: "opencode".into(),
+                            message: format!("failed to open SSE stream: {e}"),
+                        }))
+                        .await;
                     return;
                 }
             };
             if !resp.status().is_success() {
-                let _ = tx.send(Err(AgentError::Provider {
-                    provider: "opencode".into(),
-                    message: format!("SSE stream rejected: {}", resp.status()),
-                })).await;
+                let _ = tx
+                    .send(Err(AgentError::Provider {
+                        provider: "opencode".into(),
+                        message: format!("SSE stream rejected: {}", resp.status()),
+                    }))
+                    .await;
                 return;
             }
 
@@ -440,10 +437,12 @@ impl OpencodeClient {
                 let chunk = match chunk_res {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = tx.send(Err(AgentError::Provider {
-                            provider: "opencode".into(),
-                            message: format!("SSE read error: {e}"),
-                        })).await;
+                        let _ = tx
+                            .send(Err(AgentError::Provider {
+                                provider: "opencode".into(),
+                                message: format!("SSE read error: {e}"),
+                            }))
+                            .await;
                         break;
                     }
                 };
@@ -465,7 +464,9 @@ impl OpencodeClient {
                             break 'outer;
                         }
                     } else if let Some(rest) = line.strip_prefix("data:") {
-                        if !data_buf.is_empty() { data_buf.push('\n'); }
+                        if !data_buf.is_empty() {
+                            data_buf.push('\n');
+                        }
                         data_buf.push_str(rest.trim_start());
                     }
                     // Other prefixes (event:, id:, retry:) ignored.
@@ -487,20 +488,24 @@ impl OpencodeClient {
                         c.cache_creation_tokens += resp.cost.cache_creation_tokens;
                         c.total_usd += resp.cost.total_usd;
                     }
-                    let _ = prompt_tx.send(Ok(MessageEvent::ResultDone {
-                        cost: resp.cost.clone(),
-                        content: resp.content,
-                        is_error: false,
-                    })).await;
+                    let _ = prompt_tx
+                        .send(Ok(MessageEvent::ResultDone {
+                            cost: resp.cost.clone(),
+                            content: resp.content,
+                            is_error: false,
+                        }))
+                        .await;
                 }
                 Ok(Err(e)) => {
                     let _ = prompt_tx.send(Err(e)).await;
                 }
                 Err(_join) => {
-                    let _ = prompt_tx.send(Err(AgentError::Provider {
-                        provider: "opencode".into(),
-                        message: "prompt task panicked".into(),
-                    })).await;
+                    let _ = prompt_tx
+                        .send(Err(AgentError::Provider {
+                            provider: "opencode".into(),
+                            message: "prompt task panicked".into(),
+                        }))
+                        .await;
                 }
             }
         });
@@ -510,7 +515,10 @@ impl OpencodeClient {
     }
 }
 
-async fn handle_sse_event(v: &serde_json::Value, tx: &tokio::sync::mpsc::Sender<Result<nucel_agent_core::MessageEvent>>) {
+async fn handle_sse_event(
+    v: &serde_json::Value,
+    tx: &tokio::sync::mpsc::Sender<Result<nucel_agent_core::MessageEvent>>,
+) {
     use nucel_agent_core::MessageEvent;
     let kind = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
     let props = v.get("properties").unwrap_or(v);
@@ -521,18 +529,37 @@ async fn handle_sse_event(v: &serde_json::Value, tx: &tokio::sync::mpsc::Sender<
                 match pt {
                     "text" => {
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                            let _ = tx.send(Ok(MessageEvent::TextChunk { text: text.to_string() })).await;
+                            let _ = tx
+                                .send(Ok(MessageEvent::TextChunk {
+                                    text: text.to_string(),
+                                }))
+                                .await;
                         }
                     }
                     "tool" => {
-                        let name = part.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                        let id = part.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
-                        let input = part.get("input").cloned().unwrap_or(serde_json::Value::Null);
+                        let name = part
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let id = part
+                            .get("id")
+                            .and_then(|i| i.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let input = part
+                            .get("input")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
                         let _ = tx.send(Ok(MessageEvent::ToolUse { id, name, input })).await;
                     }
                     "reasoning" => {
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                            let _ = tx.send(Ok(MessageEvent::Thinking { text: text.to_string() })).await;
+                            let _ = tx
+                                .send(Ok(MessageEvent::Thinking {
+                                    text: text.to_string(),
+                                }))
+                                .await;
                         }
                     }
                     _ => {}

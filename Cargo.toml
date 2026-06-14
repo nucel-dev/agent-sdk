@@ -12,27 +12,36 @@ resolver = "2"
 
 [workspace.package]
 license = "Apache-2.0"
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 # Core
-async-trait = "0.1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-tracing = "0.1"
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
+async-trait = "0.1.89"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+chrono = { version = "0.4.45", features = ["serde"] }
+uuid = { version = "1.23.3", features = ["v4", "serde"] }
+tracing = "0.1.44"
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-stream = "0.1.18"
+futures = "0.3.32"
+libc = "0.2.186"
 
-# HTTP
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# HTTP — pinned to 0.12 to stay consistent with the wider Nucel workspace;
+# reqwest 0.13 is a breaking major the rest of the ecosystem has not adopted.
+reqwest = { version = "0.12.28", features = ["json", "stream"] }
+
+# Cloud providers
+gcp_auth = "0.12.6"
+# AWS SDK — kept loose on minor so the rust-aws ecosystem can co-evolve.
+aws-config = "1.8"
+aws-sdk-bedrockruntime = "1.134"
 
 # Testing
-wiremock = "0.6"
-tempfile = "3"
-tokio-test = "0.4"
+wiremock = "0.6.5"
+tempfile = "3.27"
+aws-smithy-mocks = "0.2.6"
 
 # ─── Build profiles ─────────────────────────────────────────────────────────
 # Cuts target/ size substantially: split-debuginfo packs DWARF into one

@@ -55,7 +55,7 @@ use nucel_agent_core::{
 use tokio::sync::mpsc::Sender;
 
 pub use auth::{AdcToken, StaticToken, TokenProvider};
-pub use pricing::{lookup as lookup_price, ModelPrice};
+pub use pricing::{ModelPrice, lookup as lookup_price};
 
 /// Default model when [`SpawnConfig::model`] is `None`.
 pub const DEFAULT_MODEL: &str = "claude-opus-4-7@20251024";
@@ -104,10 +104,7 @@ impl VertexExecutor {
     /// Build using GCP Application Default Credentials.
     ///
     /// Returns [`AgentError::Config`] if no GCP credentials are reachable.
-    pub async fn with_adc(
-        project: impl Into<String>,
-        region: impl Into<String>,
-    ) -> Result<Self> {
+    pub async fn with_adc(project: impl Into<String>, region: impl Into<String>) -> Result<Self> {
         let auth: Arc<dyn TokenProvider> = Arc::new(AdcToken::discover().await?);
         Ok(Self::new(project, region, auth))
     }
@@ -158,9 +155,10 @@ impl VertexExecutor {
     /// so integration tests can assert on the URL shape; production
     /// callers don't need it.
     pub fn endpoint_for(&self, model: &str) -> String {
-        let root = self.api_root.clone().unwrap_or_else(|| {
-            format!("https://{}-aiplatform.googleapis.com", self.region)
-        });
+        let root = self
+            .api_root
+            .clone()
+            .unwrap_or_else(|| format!("https://{}-aiplatform.googleapis.com", self.region));
         format!(
             "{root}/v1/projects/{project}/locations/{region}/publishers/anthropic/models/{model}:rawPredict",
             root = root,
@@ -241,9 +239,10 @@ struct VertexExecutorInner {
 
 impl VertexExecutorInner {
     fn endpoint_for(&self, model: &str) -> String {
-        let root = self.api_root.clone().unwrap_or_else(|| {
-            format!("https://{}-aiplatform.googleapis.com", self.region)
-        });
+        let root = self
+            .api_root
+            .clone()
+            .unwrap_or_else(|| format!("https://{}-aiplatform.googleapis.com", self.region));
         format!(
             "{root}/v1/projects/{project}/locations/{region}/publishers/anthropic/models/{model}:rawPredict",
             root = root,
@@ -661,8 +660,7 @@ mod tests {
 
     #[test]
     fn api_root_override_takes_precedence() {
-        let exec =
-            test_executor().with_api_root("http://localhost:9999");
+        let exec = test_executor().with_api_root("http://localhost:9999");
         let url = exec.endpoint_for("claude-opus-4-7@20251024");
         assert!(url.starts_with("http://localhost:9999"));
         assert!(!url.contains("googleapis.com"));
@@ -680,8 +678,7 @@ mod tests {
 
     #[test]
     fn availability_reports_empty_project() {
-        let exec =
-            VertexExecutor::with_static_token("", "us-east5", "token123");
+        let exec = VertexExecutor::with_static_token("", "us-east5", "token123");
         let avail = exec.availability();
         assert!(!avail.available);
         assert!(avail.reason.unwrap().contains("project"));
@@ -704,12 +701,7 @@ mod tests {
     async fn resume_returns_provider_error() {
         let exec = test_executor();
         let err = exec
-            .resume(
-                Path::new("/tmp"),
-                "some",
-                "hi",
-                &SpawnConfig::default(),
-            )
+            .resume(Path::new("/tmp"), "some", "hi", &SpawnConfig::default())
             .await
             .unwrap_err();
         assert!(matches!(err, AgentError::Provider { .. }));
@@ -722,10 +714,7 @@ mod tests {
             budget_usd: Some(0.0),
             ..Default::default()
         };
-        let err = exec
-            .spawn(Path::new("/tmp"), "hi", &cfg)
-            .await
-            .unwrap_err();
+        let err = exec.spawn(Path::new("/tmp"), "hi", &cfg).await.unwrap_err();
         assert!(matches!(err, AgentError::BudgetExceeded { .. }));
     }
 }

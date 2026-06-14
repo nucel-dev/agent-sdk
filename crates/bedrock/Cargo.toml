@@ -23,15 +23,13 @@ futures.workspace = true
 uuid.workspace = true
 
 # AWS SDK — kept loose on minor so the rust-aws ecosystem can co-evolve.
-aws-config = "1"
-aws-sdk-bedrockruntime = "1"
-aws-smithy-types = "1"
-aws-smithy-runtime-api = "1"
+aws-config.workspace = true
+aws-sdk-bedrockruntime.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
-aws-smithy-mocks = "0.2"
-aws-sdk-bedrockruntime = { version = "1", features = ["test-util"] }
+aws-smithy-mocks.workspace = true
+aws-sdk-bedrockruntime = { workspace = true, features = ["test-util"] }
 
 [package.metadata.docs.rs]
 all-features = true

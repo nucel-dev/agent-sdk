@@ -77,19 +77,19 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use aws_sdk_bedrockruntime::Client as BedrockClient;
 use aws_sdk_bedrockruntime::error::SdkError;
 use aws_sdk_bedrockruntime::operation::converse::ConverseError;
 use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, InferenceConfiguration, Message, SystemContentBlock,
 };
-use aws_sdk_bedrockruntime::Client as BedrockClient;
 
 use nucel_agent_core::{
     AgentCapabilities, AgentCost, AgentError, AgentExecutor, AgentResponse, AgentSession,
     AvailabilityStatus, ExecutorType, Result, SessionImpl, SpawnConfig,
 };
 
-pub use pricing::{lookup as lookup_price, ModelPrice};
+pub use pricing::{ModelPrice, lookup as lookup_price};
 
 /// Default model used when [`SpawnConfig::model`] is `None`.
 pub const DEFAULT_MODEL: &str = "anthropic.claude-opus-4-7-20251024-v2:0";
@@ -247,10 +247,7 @@ impl BedrockSessionImpl {
             req = req.inference_config(cfg);
         }
 
-        let out = req
-            .send()
-            .await
-            .map_err(|e| classify_converse_error(&e))?;
+        let out = req.send().await.map_err(|e| classify_converse_error(&e))?;
 
         // Extract assistant text from the output. The Converse response shape
         // is `output.message.content: Vec<ContentBlock>`.
@@ -477,7 +474,10 @@ mod tests {
         let caps = BedrockExecutor::from_client(dummy_client()).capabilities();
         assert!(caps.token_usage, "Bedrock reports token usage");
         assert!(!caps.session_resume, "Bedrock has no server-side sessions");
-        assert!(!caps.streaming, "Bedrock provider uses Converse (non-stream)");
+        assert!(
+            !caps.streaming,
+            "Bedrock provider uses Converse (non-stream)"
+        );
         assert!(!caps.mcp_support, "Bedrock provider does not bridge MCP");
         assert!(
             caps.prompt_caching,
@@ -524,10 +524,7 @@ mod tests {
             budget_usd: Some(0.0),
             ..Default::default()
         };
-        let err = exec
-            .spawn(Path::new("/tmp"), "hi", &cfg)
-            .await
-            .unwrap_err();
+        let err = exec.spawn(Path::new("/tmp"), "hi", &cfg).await.unwrap_err();
         assert!(
             matches!(err, AgentError::BudgetExceeded { .. }),
             "zero budget must be rejected at spawn: {err:?}"

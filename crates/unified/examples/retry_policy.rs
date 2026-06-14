@@ -12,7 +12,7 @@
 //! cargo run -p nucel-agent-sdk --example retry_policy
 //! ```
 
-use nucel_agent_sdk::{is_transient, AgentError, RetryPolicy};
+use nucel_agent_sdk::{AgentError, RetryPolicy, is_transient};
 
 fn main() {
     // The default policy: 3 retries, 250 ms base, exponential, capped at 8 s.
@@ -21,16 +21,18 @@ fn main() {
 
     println!("backoff curve (deterministic, no jitter):");
     for attempt in 0..6 {
-        println!(
-            "  retry #{attempt}: wait {:?}",
-            policy.backoff_for(attempt)
-        );
+        println!("  retry #{attempt}: wait {:?}", policy.backoff_for(attempt));
     }
     println!();
 
     // Classification: which errors are safe to retry before any side effect?
     let cases: Vec<(&str, AgentError)> = vec![
-        ("rate limited (429)", AgentError::RateLimited { message: "slow down".into() }),
+        (
+            "rate limited (429)",
+            AgentError::RateLimited {
+                message: "slow down".into(),
+            },
+        ),
         ("request timeout", AgentError::Timeout { seconds: 300 }),
         (
             "connection reset",
@@ -38,9 +40,18 @@ fn main() {
         ),
         (
             "provider error (may have side effects)",
-            AgentError::Provider { provider: "vertex".into(), message: "500".into() },
+            AgentError::Provider {
+                provider: "vertex".into(),
+                message: "500".into(),
+            },
         ),
-        ("budget exceeded", AgentError::BudgetExceeded { limit: 1.0, spent: 2.0 }),
+        (
+            "budget exceeded",
+            AgentError::BudgetExceeded {
+                limit: 1.0,
+                spent: 2.0,
+            },
+        ),
         ("config error", AgentError::Config("bad endpoint".into())),
     ];
 
@@ -48,9 +59,7 @@ fn main() {
     for (label, err) in &cases {
         let transient = is_transient(err);
         let decision = policy.should_retry(err, 0);
-        println!(
-            "  {label:<42} transient={transient:<5} would_retry={decision}"
-        );
+        println!("  {label:<42} transient={transient:<5} would_retry={decision}");
     }
 
     println!(

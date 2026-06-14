@@ -17,7 +17,7 @@ use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, ConverseOutput as ConverseOutputUnion, Message, StopReason,
     TokenUsage,
 };
-use aws_smithy_mocks::{mock, mock_client, RuleMode};
+use aws_smithy_mocks::{RuleMode, mock, mock_client};
 
 use nucel_agent_bedrock::BedrockExecutor;
 use nucel_agent_core::{AgentError, AgentExecutor, ExecutorType, SpawnConfig};
@@ -66,8 +66,7 @@ async fn spawn_first_turn_records_cost_and_transcript() {
     let rule = mock!(aws_sdk_bedrockruntime::Client::converse)
         .then_output(|| build_converse_op_output("hello from claude", 42, 17));
 
-    let client =
-        mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
+    let client = mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
 
     let executor = BedrockExecutor::from_client(client);
 
@@ -101,8 +100,7 @@ async fn multi_turn_accumulates_cost() {
         .output(|| build_converse_op_output("turn-2", 20, 7))
         .build();
 
-    let client =
-        mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
+    let client = mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
 
     let executor = BedrockExecutor::from_client(client);
     let cfg = SpawnConfig {
@@ -131,8 +129,7 @@ async fn budget_exceeded_short_circuits_next_turn() {
     let rule = mock!(aws_sdk_bedrockruntime::Client::converse)
         .then_output(|| build_converse_op_output("ok", 10_000_000, 10_000_000));
 
-    let client =
-        mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
+    let client = mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
 
     let executor = BedrockExecutor::from_client(client);
     let cfg = SpawnConfig {
@@ -160,8 +157,7 @@ async fn unknown_model_falls_back_to_zero_cost() {
     let rule = mock!(aws_sdk_bedrockruntime::Client::converse)
         .then_output(|| build_converse_op_output("hi", 100, 50));
 
-    let client =
-        mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
+    let client = mock_client!(aws_sdk_bedrockruntime, RuleMode::Sequential, &[&rule]);
     let executor = BedrockExecutor::from_client(client);
 
     let cfg = SpawnConfig {
@@ -285,5 +281,8 @@ async fn cache_tokens_are_captured() {
     assert_eq!(cost.input_tokens, 30);
     assert_eq!(cost.output_tokens, 12);
     assert_eq!(cost.cache_read_tokens, 100, "cache read tokens captured");
-    assert_eq!(cost.cache_creation_tokens, 40, "cache write tokens captured");
+    assert_eq!(
+        cost.cache_creation_tokens, 40,
+        "cache write tokens captured"
+    );
 }

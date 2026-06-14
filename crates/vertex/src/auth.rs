@@ -47,11 +47,13 @@ impl AdcToken {
     /// available (e.g. no `gcloud auth application-default login` and no
     /// metadata server reachable).
     pub async fn discover() -> Result<Self> {
-        let provider = gcp_auth::provider().await.map_err(|e| AgentError::Config(
-            format!("Vertex: GCP credentials not found ({e}). Configure via \
+        let provider = gcp_auth::provider().await.map_err(|e| {
+            AgentError::Config(format!(
+                "Vertex: GCP credentials not found ({e}). Configure via \
                      GOOGLE_APPLICATION_CREDENTIALS or `gcloud auth \
-                     application-default login`."),
-        ))?;
+                     application-default login`."
+            ))
+        })?;
         Ok(Self { provider })
     }
 }

@@ -17,8 +17,7 @@ use nucel_agent_sdk::{
     AgentCost, AgentExecutor, ClaudeCodeExecutor, CodexExecutor, OpencodeExecutor, SpawnConfig,
 };
 
-const PROMPT: &str =
-    "In one sentence, describe what this codebase does. No preamble, no markdown.";
+const PROMPT: &str = "In one sentence, describe what this codebase does. No preamble, no markdown.";
 
 #[allow(dead_code)]
 struct Row {
@@ -134,7 +133,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|r| r.cost.clone())
         .fold(AgentCost::default(), |acc, c| acc + c);
-    println!("\nrun total: ${:.4} across {} providers", total.total_usd, rows.len());
+    println!(
+        "\nrun total: ${:.4} across {} providers",
+        total.total_usd,
+        rows.len()
+    );
 
     Ok(())
 }

@@ -101,11 +101,10 @@ impl Default for CodexExecutor {
 /// Parse a Codex JSONL line.
 /// Official event types: thread.started, turn.started, item.completed, turn.completed, error
 pub(crate) fn parse_codex_line(line: &str) -> Result<Option<CodexEvent>> {
-    let v: serde_json::Value =
-        serde_json::from_str(line).map_err(|e| AgentError::Provider {
-            provider: "codex".into(),
-            message: format!("JSON parse error: {e}"),
-        })?;
+    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| AgentError::Provider {
+        provider: "codex".into(),
+        message: format!("JSON parse error: {e}"),
+    })?;
 
     let event_type = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
@@ -182,7 +181,9 @@ pub(crate) fn parse_codex_line(line: &str) -> Result<Option<CodexEvent>> {
 
 #[derive(Debug)]
 pub(crate) enum CodexEvent {
-    ThreadStarted { thread_id: String },
+    ThreadStarted {
+        thread_id: String,
+    },
     TurnStarted,
     Message(String),
     TurnCompleted {
@@ -445,10 +446,7 @@ fn fmt_stderr_tail(tail: &str) -> String {
 }
 
 /// Background task: drain the child's stderr into a rolling buffer.
-async fn drain_stderr(
-    stderr: tokio::process::ChildStderr,
-    buf: Arc<AsyncMutex<String>>,
-) {
+async fn drain_stderr(stderr: tokio::process::ChildStderr, buf: Arc<AsyncMutex<String>>) {
     let mut reader = BufReader::new(stderr);
     let mut chunk = vec![0u8; 1024];
     loop {
@@ -499,11 +497,7 @@ impl SessionImpl for CodexSessionImpl {
 
         let resume_id = {
             let g = self.thread_id.lock().unwrap();
-            if g.is_empty() {
-                None
-            } else {
-                Some(g.clone())
-            }
+            if g.is_empty() { None } else { Some(g.clone()) }
         };
 
         let out = run_codex(
@@ -630,7 +624,9 @@ async fn stream_codex(
         Ok(c) => c,
         Err(e) => {
             let err = if e.kind() == std::io::ErrorKind::NotFound {
-                AgentError::CliNotFound { cli_name: "codex".into() }
+                AgentError::CliNotFound {
+                    cli_name: "codex".into(),
+                }
             } else {
                 AgentError::Io(e)
             };
@@ -679,20 +675,29 @@ async fn stream_codex(
                     return;
                 }
             };
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
             match parse_codex_line(trimmed) {
                 Ok(Some(CodexEvent::ThreadStarted { thread_id })) => {
                     thread_id_local = thread_id;
                 }
                 Ok(Some(CodexEvent::TurnStarted)) => {}
                 Ok(Some(CodexEvent::Message(text))) => {
-                    if !content.is_empty() { content.push('\n'); }
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
                     content.push_str(&text);
                     let _ = tx.send(Ok(MessageEvent::TextChunk { text })).await;
                 }
-                Ok(Some(CodexEvent::TurnCompleted { input_tokens: i, output_tokens: o })) => {
+                Ok(Some(CodexEvent::TurnCompleted {
+                    input_tokens: i,
+                    output_tokens: o,
+                })) => {
                     input_tokens = i;
                     output_tokens = o;
                 }
@@ -703,7 +708,8 @@ async fn stream_codex(
                 Err(_) => {}
             }
         }
-    }).await;
+    })
+    .await;
 
     if result.is_err() {
         let _ = child.kill().await;
@@ -712,7 +718,11 @@ async fn stream_codex(
         let _ = tx
             .send(Err(AgentError::Provider {
                 provider: "codex".into(),
-                message: format!("stream timed out after {}s{}", timeout.as_secs(), fmt_stderr_tail(&tail)),
+                message: format!(
+                    "stream timed out after {}s{}",
+                    timeout.as_secs(),
+                    fmt_stderr_tail(&tail)
+                ),
             }))
             .await;
         return;
@@ -749,11 +759,20 @@ async fn stream_codex(
         *g = thread_id_local;
     }
     if cost.total_usd > budget {
-        let _ = tx.send(Err(AgentError::BudgetExceeded { limit: budget, spent: cost.total_usd })).await;
+        let _ = tx
+            .send(Err(AgentError::BudgetExceeded {
+                limit: budget,
+                spent: cost.total_usd,
+            }))
+            .await;
         return;
     }
     let _ = tx
-        .send(Ok(MessageEvent::ResultDone { cost, content, is_error: false }))
+        .send(Ok(MessageEvent::ResultDone {
+            cost,
+            content,
+            is_error: false,
+        }))
         .await;
 }
 
@@ -940,7 +959,10 @@ mod tests {
         assert!(caps.autonomous_mode);
         assert!(caps.token_usage);
         assert!(!caps.mcp_support);
-        assert!(caps.session_resume, "Codex resume implemented via `codex exec resume`");
+        assert!(
+            caps.session_resume,
+            "Codex resume implemented via `codex exec resume`"
+        );
         assert!(!caps.structured_output, "structured output not yet wired");
     }
 
@@ -977,8 +999,7 @@ mod tests {
     #[test]
     fn parse_codex_turn_completed_canonical_usage_key() {
         // Canonical key per Codex source is `usage` (not `token_usage`).
-        let line =
-            r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
+        let line = r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":50}}"#;
         let event = parse_codex_line(line).unwrap();
         match event {
             Some(CodexEvent::TurnCompleted {
@@ -994,7 +1015,8 @@ mod tests {
 
     #[test]
     fn parse_codex_turn_completed_legacy_token_usage_fallback() {
-        let line = r#"{"type":"turn.completed","token_usage":{"input_tokens":7,"output_tokens":11}}"#;
+        let line =
+            r#"{"type":"turn.completed","token_usage":{"input_tokens":7,"output_tokens":11}}"#;
         let event = parse_codex_line(line).unwrap();
         match event {
             Some(CodexEvent::TurnCompleted {
@@ -1037,7 +1059,8 @@ mod tests {
 
     #[test]
     fn parse_codex_turn_failed() {
-        let line = r#"{"type":"turn.failed","error":{"message":"Quota exceeded. Check your plan."}}"#;
+        let line =
+            r#"{"type":"turn.failed","error":{"message":"Quota exceeded. Check your plan."}}"#;
         let event = parse_codex_line(line).unwrap();
         match event {
             Some(CodexEvent::Error(msg)) => assert!(msg.contains("Quota")),
@@ -1073,7 +1096,10 @@ mod tests {
         let mut cmd = Command::new("codex");
         permission_to_codex_args(&mut cmd, Some(PermissionMode::DontAsk));
         let dbg = format!("{:?}", cmd.as_std());
-        assert!(dbg.contains("--sandbox") && dbg.contains("read-only"), "{dbg}");
+        assert!(
+            dbg.contains("--sandbox") && dbg.contains("read-only"),
+            "{dbg}"
+        );
     }
 
     #[test]

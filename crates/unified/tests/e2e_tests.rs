@@ -120,12 +120,10 @@ async fn e2e_opencode_full_session_lifecycle() {
     // 1. POST /session → create session
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "id": "e2e-sess-001",
-                "status": "active"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "e2e-sess-001",
+            "status": "active"
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -192,21 +190,16 @@ async fn e2e_opencode_budget_exceeded_during_prompt() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "e2e-budget"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "e2e-budget"})))
         .mount(&server)
         .await;
 
     Mock::given(method("POST"))
         .and(path("/session/e2e-budget/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "parts": [{"type": "text", "text": "Expensive analysis"}],
-                "cost": 5.0
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "Expensive analysis"}],
+            "cost": 5.0
+        })))
         .mount(&server)
         .await;
 
@@ -239,12 +232,10 @@ async fn e2e_opencode_resume_existing_session() {
 
     Mock::given(method("POST"))
         .and(path("/session/prev-session-42/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "parts": [{"type": "text", "text": "Continuing from where we left off."}],
-                "cost": 0.005
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [{"type": "text", "text": "Continuing from where we left off."}],
+            "cost": 0.005
+        })))
         .expect(1)
         .mount(&server)
         .await;
@@ -290,11 +281,7 @@ async fn e2e_opencode_server_error_handling() {
     let executor = OpencodeExecutor::with_base_url(server.uri());
 
     let result = executor
-        .spawn(
-            repo.path(),
-            "test",
-            &SpawnConfig::default(),
-        )
+        .spawn(repo.path(), "test", &SpawnConfig::default())
         .await;
 
     assert!(result.is_err());
@@ -346,37 +333,28 @@ async fn e2e_opencode_multipart_response() {
 
     Mock::given(method("POST"))
         .and(path("/session"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"id": "e2e-multi"})),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "e2e-multi"})))
         .mount(&server)
         .await;
 
     Mock::given(method("POST"))
         .and(path("/session/e2e-multi/prompt"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "parts": [
-                    {"type": "text", "text": "Step 1: Read the code"},
-                    {"type": "tool_call", "name": "read_file", "args": {"path": "main.rs"}},
-                    {"type": "tool_result", "output": "fn main() {}", "success": true},
-                    {"type": "text", "text": "Step 2: The code looks good"}
-                ],
-                "cost": 0.008
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "parts": [
+                {"type": "text", "text": "Step 1: Read the code"},
+                {"type": "tool_call", "name": "read_file", "args": {"path": "main.rs"}},
+                {"type": "tool_result", "output": "fn main() {}", "success": true},
+                {"type": "text", "text": "Step 2: The code looks good"}
+            ],
+            "cost": 0.008
+        })))
         .mount(&server)
         .await;
 
     let executor = OpencodeExecutor::with_base_url(server.uri());
 
     let session = executor
-        .spawn(
-            repo.path(),
-            "Review the code",
-            &SpawnConfig::default(),
-        )
+        .spawn(repo.path(), "Review the code", &SpawnConfig::default())
         .await
         .unwrap();
 
@@ -522,12 +500,12 @@ async fn e2e_codex_real_cli_session() {
 
 #[tokio::test]
 async fn e2e_default_query_stream_replays_query_result() {
-    use std::sync::Arc;
     use async_trait::async_trait;
     use futures::StreamExt;
     use nucel_agent_sdk::{
         AgentCost, AgentResponse, AgentSession, ExecutorType, MessageEvent, Result, SessionImpl,
     };
+    use std::sync::Arc;
 
     struct EchoSession;
     #[async_trait]
@@ -535,12 +513,21 @@ async fn e2e_default_query_stream_replays_query_result() {
         async fn query(&self, prompt: &str) -> Result<AgentResponse> {
             Ok(AgentResponse {
                 content: format!("echo: {prompt}"),
-                cost: AgentCost { input_tokens: 1, output_tokens: 2, total_usd: 0.0, ..Default::default() },
+                cost: AgentCost {
+                    input_tokens: 1,
+                    output_tokens: 2,
+                    total_usd: 0.0,
+                    ..Default::default()
+                },
                 ..Default::default()
             })
         }
-        async fn total_cost(&self) -> Result<AgentCost> { Ok(AgentCost::default()) }
-        async fn close(&self) -> Result<()> { Ok(()) }
+        async fn total_cost(&self) -> Result<AgentCost> {
+            Ok(AgentCost::default())
+        }
+        async fn close(&self) -> Result<()> {
+            Ok(())
+        }
     }
 
     let session = AgentSession::new(
@@ -569,11 +556,11 @@ async fn e2e_default_query_stream_replays_query_result() {
 
 #[tokio::test]
 async fn e2e_collect_stream_round_trips_through_session() {
-    use std::sync::Arc;
     use async_trait::async_trait;
     use nucel_agent_sdk::{
         AgentCost, AgentResponse, AgentSession, ExecutorType, Result, SessionImpl,
     };
+    use std::sync::Arc;
 
     struct S;
     #[async_trait]
@@ -581,12 +568,22 @@ async fn e2e_collect_stream_round_trips_through_session() {
         async fn query(&self, _: &str) -> Result<AgentResponse> {
             Ok(AgentResponse {
                 content: "hi".into(),
-                cost: AgentCost { input_tokens: 5, output_tokens: 7, total_usd: 0.01, cache_read_tokens: 100, cache_creation_tokens: 50 },
+                cost: AgentCost {
+                    input_tokens: 5,
+                    output_tokens: 7,
+                    total_usd: 0.01,
+                    cache_read_tokens: 100,
+                    cache_creation_tokens: 50,
+                },
                 ..Default::default()
             })
         }
-        async fn total_cost(&self) -> Result<AgentCost> { Ok(AgentCost::default()) }
-        async fn close(&self) -> Result<()> { Ok(()) }
+        async fn total_cost(&self) -> Result<AgentCost> {
+            Ok(AgentCost::default())
+        }
+        async fn close(&self) -> Result<()> {
+            Ok(())
+        }
     }
 
     let session = AgentSession::new("t", ExecutorType::ClaudeCode, "/tmp", None, Arc::new(S));
