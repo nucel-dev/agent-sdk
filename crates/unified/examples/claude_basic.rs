@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "Give me a one-paragraph summary of this codebase.",
             &SpawnConfig {
                 // Pin a model so cost is predictable.
-                model: Some("claude-opus-4-6".into()),
+                model: Some("claude-opus-5".into()),
                 // Hard cap to avoid runaway spend in demos.
                 budget_usd: Some(1.0),
                 // Keep autonomous loops short.

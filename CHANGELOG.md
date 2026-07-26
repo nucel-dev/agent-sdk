@@ -7,19 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Crate versions covered in this file:
 
-| Crate | Latest |
-|---|---|
-| `nucel-agent-core` | `0.2.1` |
-| `nucel-agent-claude-code` | `0.2.2` |
-| `nucel-agent-codex` | `0.2.2` |
-| `nucel-agent-opencode` | `0.2.1` |
-| `nucel-agent-bedrock` | `0.1.2` |
-| `nucel-agent-vertex` | `0.1.1` |
-| `nucel-agent-sdk` (umbrella) | `0.2.4` |
+| Crate | Latest | On crates.io |
+|---|---|---|
+| `nucel-agent-core` | `0.2.1` | yes |
+| `nucel-agent-claude-code` | `0.2.2` | yes |
+| `nucel-agent-codex` | `0.2.2` | yes |
+| `nucel-agent-opencode` | `0.2.1` | yes |
+| `nucel-agent-bedrock` | `0.1.2` | **no** — `publish = false` ([why](docs/known-issues/cloud-provider-pricing.md)) |
+| `nucel-agent-vertex` | `0.1.1` | **no** — `publish = false` ([why](docs/known-issues/cloud-provider-pricing.md)) |
+| `nucel-agent-sdk` (umbrella) | `0.2.4` | yes |
 
 ---
 
 ## [Unreleased]
+
+---
+
+## [0.2.4] — 2026-07-26
+
+Release of `nucel-agent-core` 0.2.1, `nucel-agent-claude-code` 0.2.2,
+`nucel-agent-codex` 0.2.2, `nucel-agent-opencode` 0.2.1, and
+`nucel-agent-sdk` 0.2.4.
+
+`nucel-agent-bedrock` 0.1.2 and `nucel-agent-vertex` 0.1.1 are **not** part of
+this release and are marked `publish = false` — see *Release hygiene* below.
+
+### Fixed — opencode availability actually probes the server (`nucel-agent-opencode` 0.2.1)
+
+- **`OpencodeExecutor::availability()` no longer lies.** It previously
+  hardcoded `available: true` unconditionally, probed nothing, and returned
+  the note `"Run `opencode serve` to start server at <url>"` as `reason` even
+  on the success path — so callers could not distinguish "server up" from
+  "nothing listening", and the only "reason" ever produced was advice, not a
+  diagnosis. It now performs a real reachability check: resolve `host:port`
+  from the configured base URL (defaulting the port by scheme — 443 for
+  `https://`, 80 otherwise) and attempt a TCP connect with a 750 ms timeout.
+  Reachable ⇒ `available: true` with `reason: None`; unreachable, or a base URL
+  with no authority ⇒ `available: false` with a `reason` naming the exact
+  endpoint that was dialled and the action that fixes it.
+- **Why this matters beyond cosmetics.** Downstream, `nucel-server` had to
+  write its own 750 ms TCP probe (`opencode_server_reachable`) purely to work
+  around this method not probing, because trusting it meant minting a bot
+  credential and spawning a doomed session on every heartbeat tick. And since
+  Nucel PR #345 the platform surfaces `AvailabilityStatus::reason` **verbatim
+  to end users** as the failure message on a skipped run — so the old string
+  was shipping as product copy. The probe budget deliberately matches the
+  workaround's so behaviour is unchanged when the workaround is retired.
+- The probe is blocking because `AgentExecutor::availability` is a synchronous
+  trait method (the subprocess providers shell out to `which` from it); cost is
+  bounded by the 750 ms timeout per resolved address.
+- New tests: `availability_is_false_when_nothing_is_listening` and
+  `availability_is_true_when_a_listener_answers` (binds a real ephemeral
+  loopback listener), plus `host_port` unit coverage for explicit ports,
+  scheme-defaulted ports, path/query stripping, and authority-less URLs. The
+  integration test `opencode_availability_mentions_server` became
+  `opencode_availability_probes_and_explains_unreachable_server` and now
+  targets loopback port 1 so it is deterministic on developer machines that
+  happen to have a real server on `:4096`.
+- Removed the `#[allow(dead_code)] fn _pathbuf_used()` placeholder and the
+  now-unused `PathBuf` import.
+
+### Release hygiene (no public API change)
+
+- **MSRV declared.** `rust-version = "1.88"` added to `[workspace.package]` and
+  inherited by every published crate, so crates.io and docs.rs stop showing no
+  MSRV at all. `edition = "2024"` only implies >= 1.85; the real floor is 1.88
+  because of let-chains. Verified by compiling the published crates with
+  `cargo +1.88 check --all-targets` (1.87 fails with E0658 in
+  `crates/core/src/session.rs`). `nucel-agent-bedrock` overrides this with
+  `1.94.1`, the MSRV its AWS SDK dependency chain declares.
+- **Tag-triggered publish workflow** added at
+  `.github/workflows/publish.yml`. Publishes the five crates to crates.io in
+  dependency order (`core` → {`claude-code`, `codex`, `opencode`} → `sdk`) with
+  an index-propagation wait between stages, so a dependent crate can resolve
+  the version just published. Every release before this one was manual and left
+  no tag in the repo.
+- **`check-core` CI job** added, failing the build if `crates/core` ever gains
+  a provider, cloud-SDK, or HTTP dependency. Models the sibling
+  `agent-operator` repo's core-purity gate with a ban list current for this
+  workspace.
+- **Docs refreshed.** `docs/architecture.md` now covers the `bedrock` and
+  `vertex` crates (previously omitted entirely), lists `query_stream()` on the
+  `SessionImpl` trait (the flagship 0.2.0 addition, previously missing), and
+  documents the feature-gating and publish status of the cloud crates.
+- **Doc examples updated** from the retired `claude-opus-4-6` to `claude-opus-5`
+  across the workspace README, per-crate READMEs, crate-level doc comments,
+  `docs/usage.md`, and the runnable `crates/unified/examples`. Protocol-parsing
+  test fixtures keep their original model strings on purpose — they assert
+  wire-format handling, not model currency.
+
+### Not released — `nucel-agent-bedrock` 0.1.2 / `nucel-agent-vertex` 0.1.1
+
+- **Both crates are now `publish = false`.** Their `budget_usd` guard does not
+  work on current models: `pricing::lookup` matches model ids by substring
+  against a hardcoded table that only knows the Claude 3.x/4.x families, so
+  `claude-opus-5` and `claude-sonnet-5` match nothing, `lookup` returns `None`,
+  cost accrues as `$0.00`, and the budget guard never trips — unbounded spend
+  with no error. Vertex additionally claims to match Anthropic list price 1:1
+  while encoding Opus at $15/$75 per MTok against an actual $5/$25, and
+  Bedrock still ships a "placeholder pricing — operator to verify" comment.
+  Fixing the numbers requires current partner list prices a human must confirm,
+  and the `None` case must refuse or warn rather than silently costing nothing,
+  so the fix is deliberately **not** in this release. Tracked in
+  `docs/known-issues/cloud-provider-pricing.md`; neither crate has ever been
+  published, so nothing is being withdrawn.
 
 ### Added — developer-facing examples, cross-provider tests, docs (no public API change)
 

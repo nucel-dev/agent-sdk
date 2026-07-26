@@ -3,6 +3,7 @@ name = "nucel-agent-sdk"
 version = "0.2.4"
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Unified AI coding agent SDK — provider-agnostic abstraction for Claude Code, Codex, and OpenCode"
 repository = "https://github.com/nucel-dev/agent-sdk"
 homepage = "https://github.com/nucel-dev/agent-sdk"

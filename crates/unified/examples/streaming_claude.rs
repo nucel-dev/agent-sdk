@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &working_dir,
             "Give me a two-sentence summary of this repo.",
             &SpawnConfig {
-                model: Some("claude-opus-4-6".into()),
+                model: Some("claude-opus-5".into()),
                 budget_usd: Some(0.50),
                 max_turns: Some(2),
                 ..Default::default()

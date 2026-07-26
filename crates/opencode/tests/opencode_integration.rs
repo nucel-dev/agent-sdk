@@ -36,17 +36,25 @@ fn opencode_capabilities() {
     );
 }
 
+/// `availability()` genuinely probes the server. Point it at loopback port 1
+/// (IANA-reserved, never bound) so the result is deterministic on any host —
+/// unlike the default `:4096`, which may or may not have a real
+/// `opencode serve` behind it on a developer machine.
 #[test]
-fn opencode_availability_mentions_server() {
-    let avail = OpencodeExecutor::new().availability();
-    let reason = avail.reason.unwrap();
+fn opencode_availability_probes_and_explains_unreachable_server() {
+    let avail = OpencodeExecutor::with_base_url("http://127.0.0.1:1").availability();
+    assert!(
+        !avail.available,
+        "nothing listens on loopback:1, so the probe must report unavailable"
+    );
+    let reason = avail.reason.expect("unavailable must carry a reason");
     assert!(
         reason.contains("opencode"),
         "reason should mention opencode: {reason}"
     );
     assert!(
-        reason.contains("4096"),
-        "reason should mention default port: {reason}"
+        reason.contains("127.0.0.1:1"),
+        "reason should name the probed endpoint: {reason}"
     );
 }
 

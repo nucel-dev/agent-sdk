@@ -3,6 +3,7 @@ name = "nucel-agent-codex"
 version = "0.2.2"
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Codex provider for Nucel agent-sdk — subprocess wrapper for OpenAI codex CLI"
 repository = "https://github.com/nucel-dev/agent-sdk"
 homepage = "https://github.com/nucel-dev/agent-sdk"

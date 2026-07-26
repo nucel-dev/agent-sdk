@@ -1,8 +1,19 @@
 [package]
 name = "nucel-agent-vertex"
 version = "0.1.1"
+# NOT PUBLISHABLE. Same defect as `nucel-agent-bedrock`: `pricing::lookup`
+# matches model ids by substring against a hardcoded table that only knows
+# `claude-opus-4` / `claude-sonnet-4` / etc., so current ids (`claude-opus-5`,
+# `claude-sonnet-5`) return `None`, cost accrues as $0.00, and the `budget_usd`
+# guard never trips — unbounded spend with no error. The table additionally
+# claims to match Anthropic list price 1:1 while encoding Opus at $15/$75 per
+# MTok against an actual $5/$25. Tracked in
+# `docs/known-issues/cloud-provider-pricing.md`. Do not flip this to `true`
+# until that issue is closed.
+publish = false
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "GCP Vertex AI provider for Nucel agent-sdk — Claude on Vertex via the Anthropic-on-Vertex API"
 repository = "https://github.com/nucel-dev/agent-sdk"
 homepage = "https://github.com/nucel-dev/agent-sdk"

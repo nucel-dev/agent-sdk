@@ -114,7 +114,7 @@ impl AgentExecutor for MyExecutor {
 
 ```rust
 pub struct SpawnConfig {
-    pub model: Option<String>,                 // "claude-opus-4-6", "gpt-5-codex", …
+    pub model: Option<String>,                 // "claude-opus-5", "gpt-5-codex", …
     pub max_tokens: Option<u32>,
     pub budget_usd: Option<f64>,               // session-wide USD budget
     pub permission_mode: Option<PermissionMode>,

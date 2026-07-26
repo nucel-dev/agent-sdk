@@ -1,8 +1,23 @@
 [package]
 name = "nucel-agent-bedrock"
 version = "0.1.2"
+# NOT PUBLISHABLE. `pricing::lookup` matches model ids by substring against a
+# hardcoded table that only knows `claude-opus-4` / `claude-sonnet-4` / etc.
+# Current model ids (`claude-opus-5`, `claude-sonnet-5`) match nothing, so
+# `lookup` returns `None`, cost accrues as $0.00, and the `budget_usd` guard in
+# `run_turn` never trips — unbounded spend with no error. The table is also
+# still labelled "placeholder pricing — operator to verify". Fixing it needs
+# current AWS Bedrock list prices someone must confirm, and the `None` case must
+# refuse or warn rather than silently costing nothing. Tracked in
+# `docs/known-issues/cloud-provider-pricing.md`. Do not flip this to `true`
+# until that issue is closed.
+publish = false
 edition.workspace = true
 license.workspace = true
+# Overrides the workspace MSRV (1.88): the AWS SDK chain pulls in
+# `aws-smithy-types`, which declares `rust-version = "1.94.1"`. Verified with
+# the active 1.94.1 toolchain via `cargo test --workspace --all-features`.
+rust-version = "1.94.1"
 description = "AWS Bedrock provider for Nucel agent-sdk — Claude models via Bedrock Runtime Converse API"
 repository = "https://github.com/nucel-dev/agent-sdk"
 homepage = "https://github.com/nucel-dev/agent-sdk"

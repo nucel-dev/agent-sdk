@@ -46,8 +46,10 @@
 mod client;
 mod protocol;
 
-use std::path::{Path, PathBuf};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -57,6 +59,62 @@ use nucel_agent_core::{
 };
 
 use client::OpencodeClient;
+
+/// How long [`OpencodeExecutor::availability`] waits for the TCP connect
+/// before declaring the server unreachable.
+///
+/// Short enough that callers can poll availability on a heartbeat without
+/// paying a noticeable stall, long enough for a healthy local or in-cluster
+/// server to answer. Matches the probe budget `nucel-server` used while it
+/// had to work around this method not probing at all.
+const AVAILABILITY_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+
+/// Extract `host:port` from an OpenCode base URL such as
+/// `http://127.0.0.1:4096`.
+///
+/// When the URL omits an explicit port, default to 443 for `https://` and 80
+/// otherwise. Returns `None` when there is no authority to connect to.
+fn host_port(base_url: &str) -> Option<String> {
+    let trimmed = base_url.trim();
+    let is_https = trimmed.starts_with("https://");
+    // Strip the scheme first (before touching slashes), then keep only the
+    // authority, dropping any trailing path/query/fragment.
+    let rest = trimmed
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if authority.is_empty() {
+        return None;
+    }
+    if authority.contains(':') {
+        Some(authority.to_string())
+    } else {
+        let port = if is_https { 443 } else { 80 };
+        Some(format!("{authority}:{port}"))
+    }
+}
+
+/// TCP connectivity check with a hard per-address timeout. `true` only when a
+/// connection is established; any resolution failure, refusal, or timeout is
+/// `false`.
+///
+/// Blocking on purpose: [`AgentExecutor::availability`] is a synchronous trait
+/// method (the subprocess providers shell out to `which` from it), so this
+/// cannot await. The cost is bounded by [`AVAILABILITY_PROBE_TIMEOUT`] per
+/// resolved address.
+fn tcp_reachable(addr: &str, timeout: Duration) -> bool {
+    let Ok(resolved) = addr.to_socket_addrs() else {
+        return false;
+    };
+    resolved.into_iter().any(|sock| {
+        TcpStream::connect_timeout(&sock, timeout)
+            .map(|stream| {
+                // Close immediately — this is a liveness probe, not a session.
+                drop(stream);
+            })
+            .is_ok()
+    })
+}
 
 /// OpenCode executor — connects to OpenCode HTTP server.
 pub struct OpencodeExecutor {
@@ -328,21 +386,42 @@ impl AgentExecutor for OpencodeExecutor {
         }
     }
 
+    /// Probe the configured OpenCode server with a short TCP connect.
+    ///
+    /// Unlike the subprocess providers there is no CLI to look for — OpenCode
+    /// is a server, so the only meaningful availability signal is whether that
+    /// server answers. `reason` is surfaced verbatim to end users by callers
+    /// (Nucel renders it as the failure message on a skipped agent run), so it
+    /// names the exact endpoint that was dialled and the action that fixes it.
+    ///
+    /// Costs at most [`AVAILABILITY_PROBE_TIMEOUT`] per resolved address.
     fn availability(&self) -> AvailabilityStatus {
-        AvailabilityStatus {
-            available: true,
-            reason: Some(format!(
-                "Run `opencode serve` to start server at {}",
-                self.base_url
-            )),
+        let Some(addr) = host_port(&self.base_url) else {
+            return AvailabilityStatus {
+                available: false,
+                reason: Some(format!(
+                    "OpenCode base URL `{}` has no host:port to connect to",
+                    self.base_url
+                )),
+            };
+        };
+
+        if tcp_reachable(&addr, AVAILABILITY_PROBE_TIMEOUT) {
+            AvailabilityStatus {
+                available: true,
+                reason: None,
+            }
+        } else {
+            AvailabilityStatus {
+                available: false,
+                reason: Some(format!(
+                    "OpenCode server not reachable at {} — start one with \
+                     `opencode serve` or point the executor at a running instance",
+                    self.base_url
+                )),
+            }
         }
     }
-}
-
-// Keep PathBuf used (formerly used directly; now via working_dir.to_path_buf()).
-#[allow(dead_code)]
-fn _pathbuf_used() -> PathBuf {
-    PathBuf::new()
 }
 
 #[cfg(test)]
@@ -374,5 +453,75 @@ mod tests {
     fn custom_base_url_strips_trailing_slash() {
         let exec = OpencodeExecutor::with_base_url("http://my-server:8080/");
         assert_eq!(exec.base_url, "http://my-server:8080");
+    }
+
+    #[test]
+    fn host_port_keeps_explicit_port() {
+        assert_eq!(
+            host_port("http://127.0.0.1:4096").as_deref(),
+            Some("127.0.0.1:4096")
+        );
+    }
+
+    #[test]
+    fn host_port_defaults_by_scheme_and_drops_path() {
+        assert_eq!(
+            host_port("http://example.com").as_deref(),
+            Some("example.com:80")
+        );
+        assert_eq!(
+            host_port("https://example.com").as_deref(),
+            Some("example.com:443")
+        );
+        assert_eq!(
+            host_port("http://example.com/some/path?x=1").as_deref(),
+            Some("example.com:80")
+        );
+    }
+
+    #[test]
+    fn host_port_rejects_authority_less_url() {
+        assert!(host_port("http://").is_none());
+        assert!(host_port("").is_none());
+    }
+
+    /// The regression this replaces: `availability()` used to hardcode
+    /// `available: true` and never touch the network, so a caller could not
+    /// distinguish "server up" from "nothing listening". Port 1 on loopback is
+    /// reserved and never bound, so the probe must report unavailable — and the
+    /// reason must name the endpoint, because callers surface it verbatim.
+    #[test]
+    fn availability_is_false_when_nothing_is_listening() {
+        let exec = OpencodeExecutor::with_base_url("http://127.0.0.1:1");
+        let status = exec.availability();
+        assert!(
+            !status.available,
+            "expected unavailable when no server is listening"
+        );
+        let reason = status.reason.expect("unavailable must carry a reason");
+        assert!(
+            reason.contains("http://127.0.0.1:1"),
+            "reason must name the endpoint that was probed, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn availability_is_true_when_a_listener_answers() {
+        // Bind an ephemeral port and leave the listener open for the probe.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let exec = OpencodeExecutor::with_base_url(format!("http://127.0.0.1:{port}"));
+        let status = exec.availability();
+
+        assert!(
+            status.available,
+            "expected available while a listener is bound, reason: {:?}",
+            status.reason
+        );
+        assert!(
+            status.reason.is_none(),
+            "available path should not carry a failure reason"
+        );
     }
 }

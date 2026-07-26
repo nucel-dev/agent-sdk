@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Path::new("/my/repo"),
         "Fix the failing tests in src/lib.rs",
         &SpawnConfig {
-            model: Some("claude-opus-4-6".into()),
+            model: Some("claude-opus-5".into()),
             budget_usd: Some(5.0),
             permission_mode: Some(PermissionMode::AcceptEdits),
             max_turns: Some(10),

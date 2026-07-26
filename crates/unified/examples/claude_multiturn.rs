@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &working_dir,
             "In one sentence, what does this codebase do?",
             &SpawnConfig {
-                model: Some("claude-opus-4-6".into()),
+                model: Some("claude-opus-5".into()),
                 // One budget cap covers the whole multi-turn session — cost
                 // accumulates across every `query()` call below.
                 budget_usd: Some(2.0),

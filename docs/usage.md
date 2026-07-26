@@ -72,7 +72,7 @@ let session = executor.spawn(
     Path::new("/my/repo"),
     "Find and fix the failing tests",
     &SpawnConfig {
-        model: Some("claude-opus-4-6".into()),
+        model: Some("claude-opus-5".into()),
         budget_usd: Some(5.0),
         max_turns: Some(10),
         ..Default::default()
@@ -121,7 +121,7 @@ Resume support varies by provider — check `capabilities().session_resume`:
 
 ```rust
 pub struct SpawnConfig {
-    pub model: Option<String>,             // "claude-opus-4-6", "gpt-5-codex", …
+    pub model: Option<String>,             // "claude-opus-5", "gpt-5-codex", …
     pub max_tokens: Option<u32>,
     pub budget_usd: Option<f64>,           // hard USD budget for the session
     pub permission_mode: Option<PermissionMode>,
