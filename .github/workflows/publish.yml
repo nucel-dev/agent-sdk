@@ -1,0 +1,198 @@
+name: Publish
+
+# Tag-triggered release to crates.io.
+#
+# Publishing is IRREVERSIBLE: a version can be yanked but never deleted or
+# overwritten. Push a tag only when the versions in the manifests are the ones
+# you intend to release.
+#
+#   git tag release-2026-07-26 && git push origin release-2026-07-26
+#
+# Order matters. `nucel-agent-{claude-code,codex,opencode}` depend on
+# `nucel-agent-core` by `{ path, version }`; on publish the path is dropped and
+# the version requirement is resolved against crates.io. So `core` must be on
+# the index — and *visible* on it — before any dependent crate is published,
+# and all three must be visible before the umbrella `nucel-agent-sdk` goes up.
+# The index is eventually consistent, hence the explicit wait between stages.
+#
+# `nucel-agent-bedrock` and `nucel-agent-vertex` are deliberately absent: both
+# carry `publish = false` (see docs/known-issues/cloud-provider-pricing.md).
+# `cargo publish` on them would refuse anyway; they are not listed here so the
+# omission reads as intentional rather than forgotten.
+#
+# ⚠️ KNOWN BLOCKER — this workflow will fail its pre-flight until it is fixed.
+# `nucel-agent-sdk` declares optional registry dependencies on those same two
+# unpublished crates, so `cargo publish -p nucel-agent-sdk` cannot resolve them
+# and errors with `no matching package named 'nucel-agent-bedrock' found`. This
+# predates the `publish = false` marker — the crates have simply never been on
+# crates.io. The other four crates are unaffected, and because the published
+# `nucel-agent-sdk` 0.2.0 requires `^0.2.0` on all four, existing consumers pick
+# up their fixes without the umbrella being republished. To unblock the
+# umbrella, either publish the cloud crates (needs the pricing fix) or drop the
+# `bedrock`/`vertex`/`all-providers` features from `crates/unified`.
+
+on:
+  push:
+    tags:
+      - "release-*"
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Never let two releases race each other onto the index.
+concurrency:
+  group: publish-crates-io
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Fail before touching the registry if the workspace is not releasable.
+      - name: Pre-flight — test and package
+        run: |
+          cargo test --workspace --all-features
+          cargo package --workspace --no-verify
+
+      # `cargo package --no-verify` does NOT resolve dependencies against
+      # crates.io, so it happily packages a crate that can never be uploaded.
+      # The failure only appears at `cargo publish` time — which, in an ordered
+      # release, is *after* earlier crates have already gone up irreversibly.
+      #
+      # So resolve it here, before anything is published: every workspace-local
+      # dependency of a crate we are about to publish must itself either be in
+      # this release, or already be on the index. A `publish = false` crate
+      # (currently bedrock and vertex) satisfies neither, and a crate that
+      # depends on one is unpublishable until that changes.
+      - name: Pre-flight — every dependency is publishable
+        run: |
+          set -euo pipefail
+
+          PUBLISH_LIST="nucel-agent-core nucel-agent-claude-code nucel-agent-codex nucel-agent-opencode nucel-agent-sdk"
+
+          META="$(cargo metadata --format-version 1 --no-deps)"
+          MEMBERS="$(jq -r '.packages[].name' <<<"$META")"
+
+          version_of() {
+            jq -r --arg n "$1" '.packages[] | select(.name == $n) | .version' <<<"$META"
+          }
+
+          on_index() {
+            curl -sSf "https://index.crates.io/${1:0:2}/${1:2:2}/$1" 2>/dev/null \
+              | jq -e --arg v "$2" 'select(.vers == $v)' >/dev/null 2>&1
+          }
+
+          blocked=0
+          for crate in $PUBLISH_LIST; do
+            # Workspace-local, non-dev dependencies of this crate.
+            deps="$(jq -r --arg n "$crate" \
+              '.packages[] | select(.name == $n) | .dependencies[]
+               | select(.kind == null) | .name' <<<"$META")"
+
+            for dep in $deps; do
+              grep -qx "$dep" <<<"$MEMBERS" || continue          # external dep — cargo handles it
+              grep -qw "$dep" <<<"$PUBLISH_LIST" && continue     # shipping in this release
+
+              dep_version="$(version_of "$dep")"
+              if on_index "$dep" "$dep_version"; then
+                continue                                        # already on crates.io
+              fi
+
+              echo "::error::$crate depends on workspace crate '$dep' ($dep_version), which is"
+              echo "::error::neither part of this release nor on crates.io. $crate cannot be published."
+              echo "::error::Either publish '$dep', drop the dependency, or remove $crate from PUBLISH_LIST."
+              blocked=1
+            done
+          done
+
+          [ "$blocked" -eq 0 ] || exit 1
+          echo "✅ every crate in the release has resolvable dependencies"
+
+      - name: Publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Sparse-index path for a crate name of 4+ chars: /ab/cd/name
+          index_url() {
+            local name="$1"
+            printf 'https://index.crates.io/%s/%s/%s' \
+              "${name:0:2}" "${name:2:2}" "$name"
+          }
+
+          # Version currently declared in the workspace for a crate.
+          declared_version() {
+            cargo metadata --format-version 1 --no-deps \
+              | jq -r --arg n "$1" '.packages[] | select(.name == $n) | .version'
+          }
+
+          # True once the given version is visible on the sparse index.
+          on_index() {
+            local name="$1" version="$2"
+            curl -sSf "$(index_url "$name")" 2>/dev/null \
+              | jq -e --arg v "$version" 'select(.vers == $v)' >/dev/null 2>&1
+          }
+
+          # Block until the index serves the version, or give up loudly.
+          # The index is eventually consistent: a dependent crate published
+          # too eagerly fails to resolve the version we just pushed.
+          wait_for_index() {
+            local name="$1" version="$2"
+            local attempt
+            for attempt in $(seq 1 30); do
+              if on_index "$name" "$version"; then
+                echo "  ✅ $name $version is live on the index (attempt $attempt)"
+                return 0
+              fi
+              echo "  ⏳ waiting for $name $version on the index (attempt $attempt/30)"
+              sleep 10
+            done
+            echo "::error::$name $version never appeared on the crates.io index after 5 minutes."
+            echo "::error::Do NOT re-run blindly — check https://crates.io/crates/$name first."
+            return 1
+          }
+
+          publish_crate() {
+            local name="$1"
+            local version
+            version="$(declared_version "$name")"
+
+            echo "::group::$name $version"
+
+            # Idempotent: a re-run after a partial failure must not error out
+            # on the crates that already made it.
+            if on_index "$name" "$version"; then
+              echo "  ⏭️  $name $version is already published — skipping"
+              echo "::endgroup::"
+              return 0
+            fi
+
+            cargo publish --locked -p "$name"
+            wait_for_index "$name" "$version"
+
+            echo "::endgroup::"
+          }
+
+          # Stage 1 — the root of the graph.
+          publish_crate nucel-agent-core
+
+          # Stage 2 — providers, each depending only on core.
+          publish_crate nucel-agent-claude-code
+          publish_crate nucel-agent-codex
+          publish_crate nucel-agent-opencode
+
+          # Stage 3 — the umbrella, depending on all of the above.
+          publish_crate nucel-agent-sdk
+
+          echo "All crates published."

@@ -3,6 +3,7 @@ name = "nucel-agent-core"
 version = "0.2.1"
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "Core traits and types for Nucel agent-sdk — provider-agnostic AI coding agent abstraction"
 repository = "https://github.com/nucel-dev/agent-sdk"
 homepage = "https://github.com/nucel-dev/agent-sdk"

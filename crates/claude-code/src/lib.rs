@@ -26,7 +26,7 @@
 //!     Path::new("/my/repo"),
 //!     "Fix the failing test in src/lib.rs",
 //!     &SpawnConfig {
-//!         model: Some("claude-opus-4-6".into()),
+//!         model: Some("claude-opus-5".into()),
 //!         budget_usd: Some(5.0),
 //!         max_turns: Some(10),
 //!         ..Default::default()

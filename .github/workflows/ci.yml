@@ -38,6 +38,76 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  check-core:
+    name: Core dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `nucel-agent-core` is the crate every provider — and every future
+      # third-party provider — depends on. Its value is that it stays small and
+      # provider-agnostic: traits, types, errors, retry policy, nothing else.
+      # A single provider or transport dependency here would force that weight
+      # onto every consumer and quietly make `core` the place new provider code
+      # lands. This gate makes that a build failure rather than a code-review
+      # judgement call.
+      #
+      # Keep the ban list current when a provider or transport is added to the
+      # workspace — a stale list is a gate that silently stops gating.
+      - name: Verify crates/core has no provider dependencies
+        run: |
+          set -euo pipefail
+
+          BANNED=(
+            # Sibling provider crates — core must never depend "upward".
+            nucel-agent-claude-code
+            nucel-agent-codex
+            nucel-agent-opencode
+            nucel-agent-bedrock
+            nucel-agent-vertex
+            nucel-agent-sdk
+            # Transports and cloud SDKs — these belong in provider crates.
+            reqwest
+            aws-config
+            aws-sdk-bedrockruntime
+            gcp_auth
+            octocrab
+            # Server / infrastructure crates that have no business in a
+            # provider-agnostic trait crate.
+            axum
+            kube
+            k8s-openapi
+            lettre
+            sentry
+          )
+
+          CORE_DEPS="$(cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] | select(.name == "nucel-agent-core") | .dependencies[].name')"
+
+          echo "crates/core declares:"
+          echo "$CORE_DEPS" | sed 's/^/  - /'
+
+          failed=0
+          for dep in "${BANNED[@]}"; do
+            if echo "$CORE_DEPS" | grep -qx "$dep"; then
+              echo "::error::banned dependency '$dep' found in crates/core/Cargo.toml"
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "crates/core must stay provider-agnostic — move this dependency"
+            echo "into the provider crate that actually needs it."
+            exit 1
+          fi
+
+          echo "✅ crates/core is clean — no banned dependencies"
+
   publish-check:
     name: Publish check
     runs-on: ubuntu-latest

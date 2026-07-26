@@ -181,7 +181,7 @@ need. At time of writing Claude Code emits at least:
   "tool_input":  { ... },
   "tool_result": { ... },   // post_tool_use only
   "prompt":      "...",     // user_prompt_submit only
-  "model":       "claude-opus-4-6"
+  "model":       "claude-opus-5"
 }
 ```
 

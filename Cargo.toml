@@ -13,6 +13,17 @@ resolver = "2"
 [workspace.package]
 license = "Apache-2.0"
 edition = "2024"
+# Minimum supported Rust version, surfaced on crates.io and docs.rs.
+#
+# `edition = "2024"` only implies >= 1.85; the real floor is higher because the
+# code uses let-chains, stabilised in 1.88. Verified empirically against the
+# five published crates with `cargo +1.88 check --all-targets` (1.87 fails with
+# E0658 on `crates/core/src/session.rs`). Raise this only alongside a re-run of
+# that check.
+#
+# The unpublished cloud crates (`bedrock`, `vertex`) need a newer toolchain via
+# the AWS SDK and override this locally; see their manifests.
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Core

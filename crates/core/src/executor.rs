@@ -43,7 +43,7 @@ pub struct AvailabilityStatus {
 /// Configuration for spawning a new session.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnConfig {
-    /// Model to use (e.g. "claude-opus-4-6", "gpt-5-codex").
+    /// Model to use (e.g. "claude-opus-5", "gpt-5-codex").
     pub model: Option<String>,
     /// Maximum tokens for responses.
     pub max_tokens: Option<u32>,
