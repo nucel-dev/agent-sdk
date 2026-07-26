@@ -32,6 +32,16 @@ Release of `nucel-agent-core` 0.2.1, `nucel-agent-claude-code` 0.2.2,
 `nucel-agent-bedrock` 0.1.2 and `nucel-agent-vertex` 0.1.1 are **not** part of
 this release and are marked `publish = false` — see *Release hygiene* below.
 
+> ⚠️ `nucel-agent-sdk` 0.2.4 is **blocked** on a pre-existing packaging problem:
+> the umbrella declares optional registry dependencies on the two unpublished
+> cloud crates, and cargo resolves optional deps against crates.io at publish
+> time, so `cargo publish -p nucel-agent-sdk` fails with `no matching package
+> named 'nucel-agent-bedrock' found`. The other four crates publish cleanly, and
+> because the already-published `nucel-agent-sdk` 0.2.0 requires `^0.2.0` on all
+> four, existing consumers receive every fix in this release without the
+> umbrella being republished. Options for unblocking it are in
+> `docs/known-issues/cloud-provider-pricing.md`.
+
 ### Fixed — opencode availability actually probes the server (`nucel-agent-opencode` 0.2.1)
 
 - **`OpencodeExecutor::availability()` no longer lies.** It previously

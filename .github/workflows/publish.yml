@@ -19,6 +19,17 @@ name: Publish
 # carry `publish = false` (see docs/known-issues/cloud-provider-pricing.md).
 # `cargo publish` on them would refuse anyway; they are not listed here so the
 # omission reads as intentional rather than forgotten.
+#
+# ⚠️ KNOWN BLOCKER — this workflow will fail its pre-flight until it is fixed.
+# `nucel-agent-sdk` declares optional registry dependencies on those same two
+# unpublished crates, so `cargo publish -p nucel-agent-sdk` cannot resolve them
+# and errors with `no matching package named 'nucel-agent-bedrock' found`. This
+# predates the `publish = false` marker — the crates have simply never been on
+# crates.io. The other four crates are unaffected, and because the published
+# `nucel-agent-sdk` 0.2.0 requires `^0.2.0` on all four, existing consumers pick
+# up their fixes without the umbrella being republished. To unblock the
+# umbrella, either publish the cloud crates (needs the pricing fix) or drop the
+# `bedrock`/`vertex`/`all-providers` features from `crates/unified`.
 
 on:
   push:
@@ -52,6 +63,60 @@ jobs:
         run: |
           cargo test --workspace --all-features
           cargo package --workspace --no-verify
+
+      # `cargo package --no-verify` does NOT resolve dependencies against
+      # crates.io, so it happily packages a crate that can never be uploaded.
+      # The failure only appears at `cargo publish` time — which, in an ordered
+      # release, is *after* earlier crates have already gone up irreversibly.
+      #
+      # So resolve it here, before anything is published: every workspace-local
+      # dependency of a crate we are about to publish must itself either be in
+      # this release, or already be on the index. A `publish = false` crate
+      # (currently bedrock and vertex) satisfies neither, and a crate that
+      # depends on one is unpublishable until that changes.
+      - name: Pre-flight — every dependency is publishable
+        run: |
+          set -euo pipefail
+
+          PUBLISH_LIST="nucel-agent-core nucel-agent-claude-code nucel-agent-codex nucel-agent-opencode nucel-agent-sdk"
+
+          META="$(cargo metadata --format-version 1 --no-deps)"
+          MEMBERS="$(jq -r '.packages[].name' <<<"$META")"
+
+          version_of() {
+            jq -r --arg n "$1" '.packages[] | select(.name == $n) | .version' <<<"$META"
+          }
+
+          on_index() {
+            curl -sSf "https://index.crates.io/${1:0:2}/${1:2:2}/$1" 2>/dev/null \
+              | jq -e --arg v "$2" 'select(.vers == $v)' >/dev/null 2>&1
+          }
+
+          blocked=0
+          for crate in $PUBLISH_LIST; do
+            # Workspace-local, non-dev dependencies of this crate.
+            deps="$(jq -r --arg n "$crate" \
+              '.packages[] | select(.name == $n) | .dependencies[]
+               | select(.kind == null) | .name' <<<"$META")"
+
+            for dep in $deps; do
+              grep -qx "$dep" <<<"$MEMBERS" || continue          # external dep — cargo handles it
+              grep -qw "$dep" <<<"$PUBLISH_LIST" && continue     # shipping in this release
+
+              dep_version="$(version_of "$dep")"
+              if on_index "$dep" "$dep_version"; then
+                continue                                        # already on crates.io
+              fi
+
+              echo "::error::$crate depends on workspace crate '$dep' ($dep_version), which is"
+              echo "::error::neither part of this release nor on crates.io. $crate cannot be published."
+              echo "::error::Either publish '$dep', drop the dependency, or remove $crate from PUBLISH_LIST."
+              blocked=1
+            done
+          done
+
+          [ "$blocked" -eq 0 ] || exit 1
+          echo "✅ every crate in the release has resolvable dependencies"
 
       - name: Publish in dependency order
         env:

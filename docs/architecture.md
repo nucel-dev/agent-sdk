@@ -15,7 +15,6 @@ agent-sdk/
 ├── CHANGELOG.md
 ├── LICENSE                          # Apache-2.0
 ├── docs/                            # this directory
-├── examples/                        # runnable examples
 └── crates/
     ├── core/                        # nucel-agent-core
     ├── claude-code/                 # nucel-agent-claude-code
@@ -24,6 +23,7 @@ agent-sdk/
     ├── bedrock/                     # nucel-agent-bedrock   (feature-gated)
     ├── vertex/                      # nucel-agent-vertex    (feature-gated)
     └── unified/                     # nucel-agent-sdk (umbrella)
+        └── examples/                # runnable examples (cargo-registered)
 ```
 
 The Cargo package name `nucel-agent-sdk` lives in `crates/unified/`.

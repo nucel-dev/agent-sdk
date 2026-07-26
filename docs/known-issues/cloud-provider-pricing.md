@@ -80,6 +80,52 @@ published crate.
 
 ---
 
+## Knock-on effect: `nucel-agent-sdk` cannot be published either
+
+`crates/unified/Cargo.toml` declares the cloud crates as optional dependencies
+with a `version` key:
+
+```toml
+nucel-agent-bedrock = { path = "../bedrock", version = "0.1.2", optional = true }
+nucel-agent-vertex  = { path = "../vertex",  version = "0.1.1", optional = true }
+```
+
+At publish time cargo strips the `path` and resolves the `version` against
+crates.io — **for optional dependencies too**. Since neither crate has ever been
+published, `cargo publish -p nucel-agent-sdk` fails:
+
+```text
+error: failed to prepare local package for uploading
+Caused by:
+  no matching package named `nucel-agent-bedrock` found
+  location searched: crates.io index
+  required by package `nucel-agent-sdk v0.2.4`
+```
+
+This is **pre-existing**, not a consequence of the `publish = false` marker —
+the marker changes nothing about registry resolution. It was missed by earlier
+release checks because `cargo package --workspace --no-verify` does not resolve
+dependencies against the registry.
+
+**It does not block the fixes from reaching consumers.** The published
+`nucel-agent-sdk` 0.2.0 requires `^0.2.0` on `nucel-agent-core`,
+`-claude-code`, `-codex`, and `-opencode`, so anyone depending on
+`nucel-agent-sdk = "0.2"` picks up the new provider versions as soon as those
+four are published. The 0.2.4 umbrella bump carries no code of its own — it is
+a re-export version bump.
+
+Two ways out, whenever the umbrella needs republishing:
+
+1. **Fix the pricing defect and publish the cloud crates.** Preferred — it
+   keeps `--features bedrock` / `--features vertex` working for umbrella users.
+2. **Drop the `bedrock` / `vertex` / `all-providers` features from
+   `crates/unified`.** Cheaper, and breaks no published consumer (those
+   features have never shipped on crates.io — they were added after 0.2.0).
+   Users would depend on the cloud crates by path or git instead.
+
+`.github/workflows/publish.yml` guards this with a pre-flight check, so a
+release tag fails *before* publishing anything rather than half-way through.
+
 ## What a fix must do
 
 1. **Refuse or warn on `None`, never silently charge $0.00.** An unknown model
