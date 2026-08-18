@@ -5,38 +5,124 @@
 [![nucel-agent-core on crates.io](https://img.shields.io/crates/v/nucel-agent-core.svg?label=nucel-agent-core)](https://crates.io/crates/nucel-agent-core)
 [![docs.rs](https://img.shields.io/docsrs/nucel-agent-sdk)](https://docs.rs/nucel-agent-sdk)
 
-Provider-agnostic Rust SDK for AI coding agents. **One trait, multiple backends.**
+A Rust workspace that puts one trait — `AgentExecutor` — in front of several
+AI backends, so the calling code can pick a backend from a config string
+instead of a `#[cfg]`.
 
-`nucel-agent-sdk` is a vendor-neutral abstraction for spawning coding-agent CLIs
-(Claude Code, Codex, OpenCode) as subprocesses or HTTP clients. Swap providers
-via a config string; the rest of your code never changes.
+Part of the [Nucel](https://github.com/nucel-dev) platform, but it has no
+dependency on the rest of Nucel and works standalone.
 
-Part of the [Nucel](https://github.com/nucel-dev) ecosystem.
+---
+
+## What is actually behind the trait
+
+Two quite different kinds of backend share the trait, and the difference
+matters more than the shared interface does:
+
+**Coding agents.** Claude Code, Codex, and OpenCode are real agents. The SDK
+starts one (as a subprocess, or over HTTP against a running server), it reads
+and writes files under `working_dir`, runs commands, and can iterate over
+several turns on its own.
+
+**Plain model APIs.** AWS Bedrock and GCP Vertex AI are not agents. Each
+`query()` is one request and one response. There is no tool loop, no file
+access, and `AgentResponse::tool_calls` is always empty — both providers
+report `capabilities().autonomous_mode == false`. They exist so you can reach
+Claude inside your own AWS or GCP boundary, with IAM or ADC instead of an
+Anthropic API key. If you want something to edit a repository, use one of the
+three agent providers.
+
+What the SDK adds on top of either kind: a session handle you can send
+follow-up prompts to, optional event streaming, cumulative token and cost
+accounting, a client-side USD budget cap, and retry handling for transient
+network failures.
+
+---
+
+## Release status
+
+The workspace is ahead of what has been published. Read this before picking a
+dependency line.
+
+| Crate | On crates.io | In this repo | Notes |
+|---|---|---|---|
+| `nucel-agent-sdk` (umbrella) | `0.2.0` | `0.2.4` | published build has **no** cargo features |
+| `nucel-agent-core` | `0.2.0` | `0.2.1` | |
+| `nucel-agent-claude-code` | `0.2.0` | `0.2.2` | |
+| `nucel-agent-codex` | `0.2.0` | `0.2.2` | |
+| `nucel-agent-opencode` | `0.2.0` | `0.2.1` | |
+| `nucel-agent-bedrock` | **not published** | `0.1.2` | alpha; git dependency only |
+| `nucel-agent-vertex` | **not published** | `0.1.1` | alpha; git dependency only |
+
+Two consequences:
+
+- The Bedrock and Vertex providers cannot be pulled from crates.io at all.
+  `nucel-agent-sdk = { version = "0.2", features = ["bedrock"] }` fails —
+  the published `0.2.0` declares no features. Use a git dependency.
+- Work landed since the `0.2.0` publish is in this repo but not on crates.io:
+  the whole `RetryPolicy` / `ApiRetry` mechanism, Bedrock throttle
+  classification, prompt-cache token capture on Claude Code and Bedrock,
+  interactive multi-turn for Claude Code, and a dependency refresh. See
+  [`CHANGELOG.md`](CHANGELOG.md) for the detail.
 
 ---
 
 ## Crates
 
-| Crate | crates.io | docs.rs | Description |
-|-------|-----------|---------|-------------|
-| [`nucel-agent-sdk`](crates/unified) | [![crates.io](https://img.shields.io/crates/v/nucel-agent-sdk.svg)](https://crates.io/crates/nucel-agent-sdk) | [![docs.rs](https://img.shields.io/docsrs/nucel-agent-sdk)](https://docs.rs/nucel-agent-sdk) | Umbrella crate — re-exports core + all providers + `build_executor()` factory |
-| [`nucel-agent-core`](crates/core) | [![crates.io](https://img.shields.io/crates/v/nucel-agent-core.svg)](https://crates.io/crates/nucel-agent-core) | [![docs.rs](https://img.shields.io/docsrs/nucel-agent-core)](https://docs.rs/nucel-agent-core) | `AgentExecutor` trait + shared types (`SpawnConfig`, `AgentSession`, `AgentResponse`, `AgentError`) |
-| [`nucel-agent-claude-code`](crates/claude-code) | [![crates.io](https://img.shields.io/crates/v/nucel-agent-claude-code.svg)](https://crates.io/crates/nucel-agent-claude-code) | [![docs.rs](https://img.shields.io/docsrs/nucel-agent-claude-code)](https://docs.rs/nucel-agent-claude-code) | Subprocess wrapper for the `claude` CLI |
-| [`nucel-agent-codex`](crates/codex) | [![crates.io](https://img.shields.io/crates/v/nucel-agent-codex.svg)](https://crates.io/crates/nucel-agent-codex) | [![docs.rs](https://img.shields.io/docsrs/nucel-agent-codex)](https://docs.rs/nucel-agent-codex) | Subprocess wrapper for the OpenAI `codex` CLI |
-| [`nucel-agent-opencode`](crates/opencode) | [![crates.io](https://img.shields.io/crates/v/nucel-agent-opencode.svg)](https://crates.io/crates/nucel-agent-opencode) | [![docs.rs](https://img.shields.io/docsrs/nucel-agent-opencode)](https://docs.rs/nucel-agent-opencode) | HTTP client for the OpenCode server |
+| Crate | Directory | Description |
+|---|---|---|
+| [`nucel-agent-sdk`](crates/unified) | `crates/unified/` | Umbrella — re-exports core + providers, plus the `build_executor()` factory |
+| [`nucel-agent-core`](crates/core) | `crates/core/` | `AgentExecutor` / `SessionImpl` traits and the shared types (`SpawnConfig`, `AgentSession`, `AgentCost`, `AgentError`, `RetryPolicy`) |
+| [`nucel-agent-claude-code`](crates/claude-code) | `crates/claude-code/` | Subprocess wrapper for the `claude` CLI |
+| [`nucel-agent-codex`](crates/codex) | `crates/codex/` | Subprocess wrapper for the OpenAI `codex` CLI |
+| [`nucel-agent-opencode`](crates/opencode) | `crates/opencode/` | HTTP client for an OpenCode server |
+| [`nucel-agent-bedrock`](crates/bedrock) | `crates/bedrock/` | AWS Bedrock Runtime `Converse` (alpha, unpublished) |
+| [`nucel-agent-vertex`](crates/vertex) | `crates/vertex/` | Claude on GCP Vertex AI `rawPredict` (alpha, unpublished) |
 
-> Most users want the umbrella crate `nucel-agent-sdk`. Pull in individual
-> provider crates only if you want to avoid compiling the providers you don't use.
+Most callers want the umbrella. Depend on a single provider crate if you would
+rather not compile the ones you don't use, and on `nucel-agent-core` alone if
+you are writing a new provider.
+
+```text
+nucel-agent-sdk (umbrella)
+├── nucel-agent-core            ← zero provider dependencies
+├── nucel-agent-claude-code  ──► nucel-agent-core
+├── nucel-agent-codex        ──► nucel-agent-core
+├── nucel-agent-opencode     ──► nucel-agent-core
+├── nucel-agent-bedrock      ──► nucel-agent-core   (feature "bedrock")
+└── nucel-agent-vertex       ──► nucel-agent-core   (feature "vertex")
+```
 
 ---
 
-## Quick Start
+## Install
+
+The three agent providers, from crates.io:
 
 ```toml
 [dependencies]
-nucel-agent-sdk = "0.1"
+nucel-agent-sdk = "0.2"
 tokio = { version = "1", features = ["full"] }
 ```
+
+With Bedrock or Vertex — git only, until those crates are published:
+
+```toml
+[dependencies]
+nucel-agent-sdk = { git = "https://github.com/nucel-dev/agent-sdk", features = ["bedrock", "vertex"] }
+tokio = { version = "1", features = ["full"] }
+```
+
+Cargo features on the umbrella: `bedrock`, `vertex`, and `all-providers`
+(both). All are off by default. The three agent providers are always compiled
+in and are not feature-gated.
+
+Each agent provider needs its runtime installed separately — see the matrix
+below. Nothing is bundled.
+
+---
+
+## Quick start
 
 ```rust
 use nucel_agent_sdk::{AgentExecutor, ClaudeCodeExecutor, SpawnConfig};
@@ -46,14 +132,15 @@ use std::path::Path;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let executor = ClaudeCodeExecutor::new();
 
-    // Check availability — does the `claude` CLI exist on PATH?
+    // Is the `claude` CLI on PATH? `reason` carries the install command
+    // when it isn't.
     let avail = executor.availability();
     if !avail.available {
-        eprintln!("Not available: {:?}", avail.reason);
+        eprintln!("not available: {:?}", avail.reason);
         return Ok(());
     }
 
-    // Spawn a session with the first prompt.
+    // Open a session with the first prompt.
     let session = executor.spawn(
         Path::new("/my/repo"),
         "Fix the failing tests in src/lib.rs",
@@ -65,173 +152,246 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ).await?;
 
-    // Follow-up query reuses the same session.
-    let resp = session.query("Did CI pass?").await?;
-    println!("Response: {}", resp.content);
+    // Follow-ups reuse the same live session.
+    let resp = session.query("Did the tests pass?").await?;
+    println!("{}", resp.content);
 
     let cost = session.total_cost().await?;
-    println!("Total cost: ${:.4}", cost.total_usd);
+    println!("spent ${:.4} over {} input / {} output tokens",
+        cost.total_usd, cost.input_tokens, cost.output_tokens);
 
     session.close().await?;
     Ok(())
 }
 ```
 
-## Provider Selection at Runtime
+`spawn()` sends the first prompt as part of opening the session, so the first
+response is already accounted for by the time you get the handle back.
+
+---
+
+## Choosing a provider at runtime
 
 ```rust
-use nucel_agent_sdk::{build_executor, available_providers};
+use nucel_agent_sdk::{available_providers, build_executor};
 
-// From a config string (e.g. `providers.agent = "claude-code"` in TOML).
-let executor = build_executor("claude-code", None).unwrap();
-let executor = build_executor("codex", None).unwrap();
-let executor = build_executor("opencode", Some("http://localhost:4096".into())).unwrap();
+let claude   = build_executor("claude-code", None).unwrap();
+let codex    = build_executor("codex", None).unwrap();
+let opencode = build_executor("opencode", Some("http://localhost:4096".into())).unwrap();
 
-// Discover what's compiled in.
 for name in available_providers() {
-    println!("provider: {name}");
+    println!("{name}");
 }
 ```
 
----
+`build_executor` returns `Option<Box<dyn AgentExecutor>>` — `None` for an
+unrecognised name. The second argument is overloaded per provider:
 
-## Feature Matrix
+| Name | Second argument | Behaviour without it |
+|---|---|---|
+| `claude-code` (also `claude_code`, `claudecode`) | ignored | fine |
+| `codex` | ignored | fine |
+| `opencode` | base URL | defaults to `http://127.0.0.1:4096` |
+| `bedrock` (feature `bedrock`) | ignored | resolves the default AWS credential chain |
+| `vertex` (feature `vertex`) | `"<project>:<region>"`, e.g. `"my-proj:us-east5"` | returns `None` |
 
-| Capability                   | Claude Code | Codex | OpenCode |
-|------------------------------|:-----------:|:-----:|:--------:|
-| `session_resume`             | yes         | no    | yes      |
-| `token_usage`                | yes         | yes   | yes      |
-| `mcp_support`                | yes         | no    | yes      |
-| `autonomous_mode`            | yes         | yes   | yes      |
-| `structured_output`          | no          | yes   | no       |
-| Transport                    | subprocess (JSONL) | subprocess (JSONL) | HTTP REST |
-| Required runtime             | `claude` CLI | `codex` CLI | `opencode serve` |
-| Budget enforcement (CLI-side)| `--max-budget-usd` | client-side | client-side |
-| Default permission mode      | `default` (prompt) | `workspace-write` sandbox | server-configured |
+Matching is case-sensitive: `"Claude-Code"` and `"CODEX"` return `None`.
+`available_providers()` reflects the features you compiled with, so it is the
+right thing to show a user when their config string does not resolve.
 
-Values come directly from each provider's `capabilities()` implementation —
-see `crates/*/src/lib.rs`.
-
-### `SpawnConfig` field support
-
-| `SpawnConfig` field | Claude Code | Codex | OpenCode |
-|---------------------|:-----------:|:-----:|:--------:|
-| `model`             | `--model`   | `--model` | `model.modelID` in body |
-| `max_tokens`        | (no direct CLI flag) | (no direct CLI flag) | (n/a) |
-| `budget_usd`        | `--max-budget-usd` + client guard | client guard | client guard |
-| `permission_mode`   | `--permission-mode <mode>` | sandbox + approval flags | (server-side) |
-| `env`               | yes (subprocess env) | yes (subprocess env) | (n/a) |
-| `system_prompt`     | `--system-prompt` | (n/a yet) | `system` field in body |
-| `reasoning`         | (provider-specific) | (provider-specific) | (n/a) |
-| `max_turns`         | `--max-turns <n>` | (single-turn `codex exec`) | (server-controlled) |
+`build_executor("bedrock", …)` and `build_executor("vertex", …)` do async
+credential discovery behind a synchronous signature by driving a short-lived
+current-thread runtime. That is safe to call from inside a Tokio runtime, but
+it does block the calling thread, so prefer `BedrockExecutor::new().await` /
+`VertexExecutor::with_adc(project, region).await` on a hot path.
 
 ---
 
-## Architecture
+## Provider matrix
 
-```text
-nucel-agent-sdk            (umbrella — re-exports + build_executor)
-└── nucel-agent-core       (AgentExecutor trait, AgentSession, types, errors)
-    ├── nucel-agent-claude-code  (claude CLI subprocess)
-    ├── nucel-agent-codex        (codex CLI subprocess)
-    └── nucel-agent-opencode     (opencode HTTP client)
-```
+Every value below is read straight out of each provider's `capabilities()` in
+`crates/*/src/lib.rs`. Nothing here is aspirational.
 
-### Core trait
+| `AgentCapabilities` field | Claude Code | Codex | OpenCode | Bedrock | Vertex |
+|---|:--:|:--:|:--:|:--:|:--:|
+| `session_resume` | yes | yes | yes | no | no |
+| `token_usage` | yes | yes | yes | yes | yes |
+| `mcp_support` | yes | no | yes | no | no |
+| `autonomous_mode` | yes | yes | yes | **no** | **no** |
+| `structured_output` | no | no | no | no | no |
+| `streaming` | yes | yes | yes | no | yes |
+| `hooks` | yes | no | no | no | no |
+| `prompt_caching` | yes | no | no | yes | yes |
+| `extended_thinking` | yes | no | no | no | no |
+
+| | Claude Code | Codex | OpenCode | Bedrock | Vertex |
+|---|---|---|---|---|---|
+| Transport | subprocess, stream-json over stdio | subprocess, `codex exec --json` | HTTP REST | AWS SDK `Converse` | HTTPS `rawPredict` |
+| Runtime you must supply | `claude` CLI | `codex` CLI | a running `opencode serve` | AWS credentials | GCP ADC or a token |
+| Default endpoint / model | CLI default | CLI default | `http://127.0.0.1:4096` | `anthropic.claude-opus-4-7-20251024-v2:0` | `claude-opus-4-7@20251024` |
+| `budget_usd` enforcement | `--max-budget-usd` **and** a client-side guard | client-side guard | client-side guard | client-side guard | client-side guard |
+
+Things worth knowing that a matrix cell can't carry:
+
+- **`structured_output` is `false` everywhere.** Codex has an
+  `--output-schema` flag upstream, but this SDK does not wire it yet.
+- **`ExecutorType` has only three variants** (`ClaudeCode`, `Codex`,
+  `OpenCode`). Bedrock and Vertex both report `ExecutorType::ClaudeCode`,
+  because the enum was closed for the 0.2.x line. Do not use `executor_type()`
+  to tell a Bedrock session apart from a Claude Code one.
+- **`resume()` on Bedrock and Vertex returns `AgentError::Provider`.** Both
+  keep their transcript client-side, so there is no session id to look up.
+  Persist the transcript yourself and spawn again.
+- **Hooks are Claude Code only.** Other providers accept a `HookConfig` and
+  log that they ignored it.
+- **Bedrock does not stream.** `query_stream()` still works there, but it
+  falls back to the default implementation in `SessionImpl`, which replays the
+  finished response as a single `TextChunk` followed by `ResultDone`.
+- **Bedrock and Vertex report an estimated `total_usd`**, computed from
+  hardcoded price tables (`crates/bedrock/src/pricing.rs`,
+  `crates/vertex/src/pricing.rs`). Their token counts are exact; the dollar
+  figure is not authoritative for billing — reconcile against your AWS or GCP
+  invoice. Claude Code, by contrast, reports the CLI's own `total_cost_usd`.
+
+---
+
+## The API surface
+
+### `AgentExecutor`
 
 ```rust
 #[async_trait]
 pub trait AgentExecutor: Send + Sync {
     fn executor_type(&self) -> ExecutorType;
 
-    async fn spawn(
-        &self,
-        working_dir: &Path,
-        prompt: &str,
-        config: &SpawnConfig,
-    ) -> Result<AgentSession>;
+    async fn spawn(&self, working_dir: &Path, prompt: &str, config: &SpawnConfig)
+        -> Result<AgentSession>;
 
-    async fn resume(
-        &self,
-        working_dir: &Path,
-        session_id: &str,
-        prompt: &str,
-        config: &SpawnConfig,
-    ) -> Result<AgentSession>;
+    async fn resume(&self, working_dir: &Path, session_id: &str, prompt: &str, config: &SpawnConfig)
+        -> Result<AgentSession>;
 
     fn capabilities(&self) -> AgentCapabilities;
     fn availability(&self) -> AvailabilityStatus;
 }
 ```
 
-### Session API
+`availability()` is a cheap synchronous probe — is the CLI on `PATH`, are the
+credentials resolvable — and its `reason` is written to be shown to a human.
+Providers do not refuse to run when it reports `false`; they let the real
+error through instead.
+
+### `AgentSession`
 
 ```rust
-let session = executor.spawn(working_dir, "fix bug", &config).await?;
+let session = executor.spawn(working_dir, "fix the bug", &config).await?;
 
-// Follow-up queries on the same session
-let resp = session.query("now add tests").await?;
-
-// Accumulated cost
-let cost = session.total_cost().await?;
-
-// Clean up subprocess / HTTP resources
-session.close().await?;
+session.session_id;                          // resumable id, where supported
+let resp   = session.query("now add tests").await?;
+let stream = session.query_stream("explain").await?;   // Stream<Item = Result<MessageEvent>>
+let cost   = session.total_cost().await?;    // cumulative for the session
+let meta   = session.metadata();             // cloneable, persistable snapshot
+session.close().await?;                      // consumes self
 ```
+
+`AgentSession::collect_stream(stream)` folds an `EventStream` back into an
+`AgentResponse` if you want streaming for progress display but a single value
+at the end.
 
 ### `SpawnConfig`
 
 ```rust
 pub struct SpawnConfig {
-    pub model: Option<String>,             // e.g. "claude-opus-4-6", "gpt-5-codex"
-    pub max_tokens: Option<u32>,           // upper bound on response tokens
-    pub budget_usd: Option<f64>,           // session-wide USD budget
+    pub model: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub budget_usd: Option<f64>,
     pub permission_mode: Option<PermissionMode>,
-    pub env: Vec<(String, String)>,        // extra env vars for the subprocess
+    pub env: Vec<(String, String)>,          // extra subprocess env
     pub system_prompt: Option<String>,
-    pub reasoning: Option<String>,         // provider-specific reasoning effort
-    pub max_turns: Option<u32>,            // autonomous turns before returning (added in 0.1.3)
-    pub retry_policy: RetryPolicy,         // transient pre-side-effect retry (network providers)
-    // ... (hook_config, cache_breakpoints, thinking_budget — Claude Code only)
+    pub reasoning: Option<String>,           // Claude Code: --effort
+    pub max_turns: Option<u32>,
+    pub hook_config: Option<HookConfig>,     // Claude Code only
+    pub cache_breakpoints: Vec<CachePoint>,  // prompt caching
+    pub thinking_budget: Option<u32>,        // Claude Code only
+    pub retry_policy: RetryPolicy,
 }
 ```
 
+It derives `Default`, and every field is additive, so `..Default::default()`
+keeps compiling as fields are added.
+
+How the fields reach each backend:
+
+| Field | Claude Code | Codex | OpenCode | Bedrock / Vertex |
+|---|---|---|---|---|
+| `model` | `--model` | `--model` | `{providerID, modelID}` in the body, split on `/` | body |
+| `budget_usd` | `--max-budget-usd` **and** a client guard | client guard | client guard | client guard |
+| `system_prompt` | `--system-prompt` | not sent | body | body |
+| `max_tokens` | no CLI flag | no CLI flag | not sent | body (Vertex defaults to 4096) |
+| `permission_mode` | `--permission-mode` | `--sandbox` / bypass flag | not sent | not sent |
+| `max_turns` | `--max-turns` | not sent | not sent | n/a — one request per `query()` |
+| `reasoning` | `--effort` | not sent | not sent | not sent |
+| `thinking_budget` | `--thinking-budget-tokens` | not sent | not sent | not sent |
+| `hook_config` | `--settings <json>` | ignored | ignored | ignored |
+| `env` | subprocess env | subprocess env | n/a | n/a |
+| `retry_policy` | delegated to the CLI | delegated to the CLI | honoured | Vertex honours it; Bedrock defers to the AWS SDK |
+
 ### `PermissionMode`
 
-| Variant | Meaning |
-|---|---|
-| `Prompt` | Ask the user for each operation (default). |
-| `AcceptEdits` | Auto-approve file edits, still prompt for bash. |
-| `BypassPermissions` | Skip all permission checks (sandbox mode). |
-| `RejectAll` | Reject all operations (dry run / plan mode). |
+Six variants. Each provider maps them onto its own native flag:
 
-Each provider maps these to its own native flag — see [`docs/architecture.md`](docs/architecture.md).
+| Variant | Claude Code | Codex |
+|---|---|---|
+| `Prompt` (default) | `default` | `--sandbox workspace-write` |
+| `AcceptEdits` | `acceptEdits` | `--sandbox workspace-write` |
+| `BypassPermissions` | `bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` |
+| `RejectAll` | `plan` | `--sandbox read-only` |
+| `DontAsk` | `dontAsk` | `--sandbox read-only` |
+| `Auto` | `default` | `--sandbox workspace-write` |
+
+`RejectAll` is historically misnamed: on Claude Code it maps to `plan` mode,
+which still reads files. If you want deny-without-prompting, use `DontAsk`.
+
+### Errors
+
+`AgentError` is `#[non_exhaustive]`, so match with a `_` arm. The variants
+worth handling explicitly are `BudgetExceeded { limit, spent }`,
+`CliNotFound { cli_name }`, `RateLimited { message }`, `Timeout { seconds }`,
+and `SessionNotFound { session_id }`. Everything provider-specific is wrapped
+into `Provider { provider, message }` — provider crates do not define their
+own error types.
+
+### `MessageEvent`
+
+What `query_stream()` yields: `TextChunk`, `ToolUse`, `ToolResult`,
+`Thinking`, `ApiRetry`, `RateLimit`, and the two terminal events `ResultDone`
+(carries the final `AgentCost`) and `Error`. A conforming stream always ends
+with one of the two terminal events.
 
 ---
 
-## Reliability: automatic retries
+## Retries
 
-The network providers (**Vertex** and the **OpenCode HTTP** client) automatically
-retry *transient, pre-side-effect* request failures with exponential backoff.
-Subprocess providers (Claude Code, Codex) delegate retrying to their own CLI.
+The two network providers — Vertex and the OpenCode HTTP client — retry
+transient request failures with exponential backoff. The subprocess providers
+delegate retrying to their own CLI, and Bedrock delegates to the AWS SDK's
+retry layer.
 
-The rule: **retry only the request-dispatch window; fatal after any side
-effect.** Once the model starts streaming a `2xx` body (tokens, cost, tool
-calls), errors from there on are never retried — replaying a turn that already
-produced output would double-charge and duplicate side effects.
+The rule is: **retry the request-dispatch window only, fatal after any side
+effect.** Once a `2xx` body starts arriving — tokens, cost, tool calls — every
+later error is fatal, because replaying a turn that already produced output
+would double-charge and duplicate its side effects.
 
-**Retried (transient):** connection errors (reset/refused/aborted/broken
-pipe/DNS), request timeouts, and `429` / `502` / `503` / `504` *before any
-response body is consumed*.
-**Fatal (never retried):** any other `4xx`/hard `5xx`, decode/`Provider` errors
-after a `2xx` body starts, and `BudgetExceeded` / `Config` / JSON errors.
+Retried: connection errors (reset, refused, aborted, broken pipe, DNS),
+request timeouts, and `429` / `502` / `503` / `504` *before any response body
+is consumed*. Fatal: everything else, including `Provider` and decode errors
+after a body has started, plus `BudgetExceeded`, `Config`, and JSON errors.
 
 ```rust
 use nucel_agent_sdk::{RetryPolicy, SpawnConfig};
 use nucel_agent_vertex::VertexExecutor;
 use std::time::Duration;
 
-// Default policy: 3 retries, 250 ms base, exponential, capped at 8 s.
+// Default: 3 retries, 250 ms base, doubling, capped at 8 s.
 let executor = VertexExecutor::with_adc("my-gcp-project", "us-east5")
     .await?
     .with_retry_policy(RetryPolicy {
@@ -240,90 +400,164 @@ let executor = VertexExecutor::with_adc("my-gcp-project", "us-east5")
         max_backoff: Duration::from_secs(10),
     });
 
-// Or override per session; RetryPolicy::none() opts out.
+// Or per session. A non-default value here wins over the executor's policy;
+// RetryPolicy::none() opts out entirely.
 let config = SpawnConfig {
     retry_policy: RetryPolicy::with_max_retries(2),
     ..Default::default()
 };
 ```
 
-Each retry is observable on the stream as a `MessageEvent::ApiRetry { attempt,
-message }` event (and logged via `tracing::warn!`). See
-[`docs/tutorials/retries.md`](docs/tutorials/retries.md) for the full
-classification table, per-provider support, `SpawnConfig`/`ExecutorConfig`
-precedence, and the
-[`retry_policy`](crates/unified/examples/retry_policy.rs) +
-[`vertex_with_retry`](crates/unified/examples/vertex_with_retry.rs) examples.
-
----
-
-## Adding a New Provider
-
-1. Create `crates/my-provider/` with a `Cargo.toml` that depends on `nucel-agent-core`.
-2. Implement the `AgentExecutor` trait and a `SessionImpl` for your transport.
-3. Add the crate to the workspace `members` list in the root `Cargo.toml`.
-4. Re-export `MyProviderExecutor` from `crates/unified/src/lib.rs`.
-5. Add a match arm in `build_executor()` and an entry in `available_providers()`.
-6. Add unit tests (executor type, capabilities, availability) + integration tests
-   (mock CLI / mock HTTP server).
-
-See [`docs/architecture.md`](docs/architecture.md) for a deeper walkthrough.
-
----
-
-## Integration with `agent-operator`
-
-```toml
-# agent-operator/Cargo.toml
-[dependencies]
-nucel-agent-sdk = "0.1"
-```
-
-```rust
-use nucel_agent_sdk::{AgentExecutor, build_executor};
-
-let executor = build_executor(&config.providers.agent, None)
-    .ok_or("unknown agent provider")?;
-let session = executor.spawn(working_dir, prompt, &spawn_config).await?;
-```
+Each retry surfaces on the stream as `MessageEvent::ApiRetry { attempt,
+message }` and is logged at `warn`. Full classification table and the
+`SpawnConfig` / `ExecutorConfig` precedence rules are in
+[`docs/tutorials/retries.md`](docs/tutorials/retries.md).
 
 ---
 
 ## Examples
 
-Runnable examples live in the umbrella crate
-([`crates/unified/examples/`](crates/unified/examples)):
+Runnable examples live in [`crates/unified/examples/`](crates/unified/examples).
 
-- [`claude_basic.rs`](crates/unified/examples/claude_basic.rs) — minimal Claude Code session
-- [`claude_multiturn.rs`](crates/unified/examples/claude_multiturn.rs) — one live session, several sequential `query()` calls, cumulative cost (incl. cache tokens)
-- [`codex_resume.rs`](crates/unified/examples/codex_resume.rs) — spawn, save `session_id`, resume in a new handle
-- [`opencode_http.rs`](crates/unified/examples/opencode_http.rs) — point at a local `opencode serve`
-- [`build_executor.rs`](crates/unified/examples/build_executor.rs) — pick a provider by name and inspect its capabilities
-- [`streaming_claude.rs`](crates/unified/examples/streaming_claude.rs) — 0.2.0 `query_stream()`: print tokens as they arrive
-- [`multi_provider_handoff.rs`](crates/unified/examples/multi_provider_handoff.rs) — run the same prompt across all 3 providers, compare cost
-- [`with_hooks.rs`](crates/unified/examples/with_hooks.rs) — pre/post tool-use hooks (Claude Code only)
-- [`budget_control.rs`](crates/unified/examples/budget_control.rs) — hit the `budget_usd` cap and handle `BudgetExceeded`
-- [`resume_session.rs`](crates/unified/examples/resume_session.rs) — full spawn → save id → close → resume → continue flow
-- [`retry_policy.rs`](crates/unified/examples/retry_policy.rs) — inspect the default backoff curve and transient-error classification (no network/credentials)
-- [`vertex_with_retry.rs`](crates/unified/examples/vertex_with_retry.rs) — build a Vertex executor with a custom `RetryPolicy` and run a turn (needs `vertex` feature + GCP ADC)
+Run without any credentials or CLI installed:
 
 ```bash
-cargo run -p nucel-agent-sdk --example claude_basic -- /path/to/repo
-cargo run -p nucel-agent-sdk --example claude_multiturn -- /path/to/repo
-cargo run -p nucel-agent-sdk --example streaming_claude -- /path/to/repo
-cargo run -p nucel-agent-sdk --example build_executor -- claude-code
 cargo run -p nucel-agent-sdk --example retry_policy
-cargo run -p nucel-agent-sdk --features vertex --example vertex_with_retry -- my-gcp-project us-east5
+cargo run -p nucel-agent-sdk --example build_executor -- claude-code
 ```
+
+| Example | What it shows | Needs |
+|---|---|---|
+| [`retry_policy`](crates/unified/examples/retry_policy.rs) | default backoff curve and transient-error classification | nothing |
+| [`build_executor`](crates/unified/examples/build_executor.rs) | pick a provider by name, print its capabilities | nothing |
+| [`claude_basic`](crates/unified/examples/claude_basic.rs) | minimal spawn → query → close | `claude` CLI |
+| [`claude_multiturn`](crates/unified/examples/claude_multiturn.rs) | several `query()` calls on one live session, cumulative cost including cache tokens | `claude` CLI |
+| [`streaming_claude`](crates/unified/examples/streaming_claude.rs) | `query_stream()`, printing tokens as they arrive | `claude` CLI |
+| [`with_hooks`](crates/unified/examples/with_hooks.rs) | pre/post tool-use hooks | `claude` CLI |
+| [`budget_control`](crates/unified/examples/budget_control.rs) | hitting the `budget_usd` cap and handling `BudgetExceeded` | `claude` CLI |
+| [`resume_session`](crates/unified/examples/resume_session.rs) | spawn → save id → close → resume → continue | `claude` CLI |
+| [`codex_resume`](crates/unified/examples/codex_resume.rs) | the same flow on Codex threads | `codex` CLI |
+| [`opencode_http`](crates/unified/examples/opencode_http.rs) | pointing at a local `opencode serve` | `opencode serve` |
+| [`multi_provider_handoff`](crates/unified/examples/multi_provider_handoff.rs) | one prompt across all three agent providers, comparing cost | all three CLIs |
+| [`bedrock_basic`](crates/unified/examples/bedrock_basic.rs) | AWS-native path end to end | `--features bedrock`, AWS credentials |
+| [`vertex_with_retry`](crates/unified/examples/vertex_with_retry.rs) | a Vertex executor with a custom `RetryPolicy` | `--features vertex`, GCP ADC |
+
+```bash
+cargo run -p nucel-agent-sdk --features bedrock --example bedrock_basic
+cargo run -p nucel-agent-sdk --features vertex  --example vertex_with_retry -- my-gcp-project us-east5
+```
+
+---
+
+## Build, test, lint
+
+```bash
+cargo build --workspace
+cargo test  --workspace
+cargo test  --workspace --all-features   # adds the bedrock/vertex build_executor arms
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+The Bedrock and Vertex crates are workspace members, so `cargo test
+--workspace` already covers them; `--all-features` only turns on the
+umbrella's feature-gated re-exports and factory arms.
+
+The suite needs no network, no cloud credentials, and no agent CLI: HTTP
+providers are tested against `wiremock`, Bedrock against `aws-smithy-mocks`,
+and the subprocess providers by asserting on constructed argument vectors and
+parsed protocol fixtures rather than by launching a real CLI.
+
+CI is GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+fmt, clippy with `-D warnings`, build and test on `ubuntu-latest` and
+`macos-latest`, plus a `publish-check` job that runs a registry-verified
+`cargo publish --dry-run` for `nucel-agent-core` and
+`cargo package --workspace --no-verify` for everything else. The dry run
+cannot cover the downstream crates, because they depend on siblings by
+`{ path, version }` and a just-bumped sibling version is not on crates.io yet.
+
+The manifests do not declare a `rust-version`; `edition = "2024"` implies Rust
+1.85 or newer, and CI builds on `stable`. Verified locally on 1.97.1.
+`Cargo.lock` is gitignored, as is normal for a library workspace.
+
+---
+
+## Contributing
+
+Bug fixes, docs, and perf work: open a PR against `main` and make sure `cargo
+fmt --check` and `cargo clippy --all-targets -- -D warnings` pass.
+
+Adding a provider is the case with the most moving parts, and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) walks through it. In outline:
+
+1. New crate under `crates/`, depending on `nucel-agent-core`.
+2. Implement `AgentExecutor` for the executor and `SessionImpl` for the
+   session.
+3. Add it to `members` in the root `Cargo.toml`.
+4. Re-export the executor from `crates/unified/src/lib.rs`, add a
+   `build_executor()` arm and an `available_providers()` entry. Gate it behind
+   a cargo feature if it drags in a heavy dependency tree — that is what
+   `bedrock` and `vertex` do.
+5. Tests: unit tests for the constructor, capability bitmap and availability
+   probe; an integration suite against a mock backend; a round-trip through
+   `build_executor()` in `crates/unified/tests/`.
+
+One rule matters more than the rest: **be honest in `capabilities()`.** Set a
+flag to `true` only if the capability really works. Callers branch on those
+flags to decide what to expose to their users, so a wrong flag breaks them
+silently rather than loudly.
+
+Do not add dependencies to `nucel-agent-core`; it stays small on purpose. Do
+not bump versions in a PR — releases are done separately.
+
+---
+
+## Where this sits in Nucel
+
+Two Nucel components consume these crates today, and they consume them
+differently:
+
+- **[`agent-operator`](https://github.com/nucel-dev/agent-operator)** — the
+  Kubernetes operator that runs `AgentTask` / `PrReviewTask`. Depends on the
+  umbrella (`nucel-agent-sdk = "0.1"`, locked at `0.1.4`, so one release line
+  behind this repo) behind its own `claude-code` / `codex` / `opencode` cargo
+  features, and wraps each executor in its own `CodingAgent` port.
+- **`nucel-server`** in the [`nucel`](https://github.com/nucel-dev/nucel)
+  repo — depends on the individual crates (`nucel-agent-core`,
+  `-claude-code`, `-codex`, `-opencode`, all at `0.2.0`) rather than the
+  umbrella. Its `adapters/local.rs` constructs the concrete executors and
+  keeps everything around them on `nucel_agent_core::AgentExecutor`, and it
+  surfaces `availability().reason` verbatim when a `local` agent session fails
+  because the server image ships no `claude` CLI.
+
+Worth noting for anyone maintaining the factory: neither consumer actually
+calls `build_executor()`. Both import the concrete executor types and select
+between them with their own cargo features. The factory is still the right
+entry point for a caller whose provider name arrives at runtime, but it is not
+currently load-bearing inside Nucel.
+
+Nothing in this workspace depends on Nucel, so it is usable on its own.
 
 ---
 
 ## Docs
 
-- [`docs/usage.md`](docs/usage.md) — Usage patterns, error handling, budget control
-- [`docs/architecture.md`](docs/architecture.md) — Internals, transport details, adding providers
-- [`docs/tutorials/`](docs/tutorials/) — Getting started, multi-turn, streaming, retries, hooks, cost & tokens, budget control, provider comparison
-- [`CHANGELOG.md`](CHANGELOG.md) — Release notes
+- [`docs/usage.md`](docs/usage.md) — usage patterns, error handling, budget control
+- [`docs/architecture.md`](docs/architecture.md) — internals, per-provider transport details, adding a provider
+- [`docs/tutorials/`](docs/tutorials/) — getting started, multi-turn, streaming, retries, hooks, cost and tokens, budget control, provider comparison, and Bedrock/Vertex
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — adding a provider
+
+Known-stale, not yet corrected — treat this README and the source as
+authoritative until they catch up:
+
+- `docs/architecture.md` and `docs/tutorials/provider-comparison.md` predate
+  the Bedrock and Vertex crates and still describe a three-provider workspace.
+- `crates/codex/README.md` and `crates/unified/README.md` still report
+  `session_resume: false` and `structured_output: true` for Codex. Both are
+  the wrong way round against `crates/codex/src/lib.rs`.
+- Several crate READMEs still show `nucel-agent-sdk = "0.1"` in their install
+  snippet.
 
 ## License
 
