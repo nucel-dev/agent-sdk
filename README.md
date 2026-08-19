@@ -243,7 +243,8 @@ Things worth knowing that a matrix cell can't carry:
   keep their transcript client-side, so there is no session id to look up.
   Persist the transcript yourself and spawn again.
 - **Hooks are Claude Code only.** Other providers accept a `HookConfig` and
-  log that they ignored it.
+  silently ignore it. Nothing is logged, so do not wait for a warning if your
+  hooks never fire.
 - **Bedrock does not stream.** `query_stream()` still works there, but it
   falls back to the default implementation in `SessionImpl`, which replays the
   finished response as a single `TextChunk` followed by `ResultDone`.
@@ -387,8 +388,8 @@ is consumed*. Fatal: everything else, including `Provider` and decode errors
 after a body has started, plus `BudgetExceeded`, `Config`, and JSON errors.
 
 ```rust
-use nucel_agent_sdk::{RetryPolicy, SpawnConfig};
-use nucel_agent_vertex::VertexExecutor;
+// `VertexExecutor` is re-exported from the umbrella behind the `vertex` feature.
+use nucel_agent_sdk::{RetryPolicy, SpawnConfig, VertexExecutor};
 use std::time::Duration;
 
 // Default: 3 retries, 250 ms base, doubling, capped at 8 s.
